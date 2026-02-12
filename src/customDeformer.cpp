@@ -49,21 +49,14 @@ MStatus customDeformer::deform(MDataBlock& block, MItGeometry& iter, const MMatr
 	
 	envelope = block.inputValue(customDeformer::envelope, &returnStatus).asFloat();
 	
-
-	MGlobal::displayInfo("printing inside deform block");
-
-	MArrayDataHandle inputArray = block.inputArrayValue(MPxGeometryFilter::input, &returnStatus);
-	returnStatus = inputArray.jumpToElement(multiIndex);
-	MDataHandle inputData = inputArray.inputValue(&returnStatus);
-
-	MDataHandle inputGeomHandle = inputData.child(MPxGeometryFilter::inputGeom);
-	MObject inputMesh = inputGeomHandle.asMesh();
-
 	std::vector<MPoint> currentPos;
 	currentPos.clear();
 
 	std::map<std::pair<int, int>, float> tension;
 
+	if (envelope < 0.001f) return MStatus::kSuccess;
+
+	int numVerts = iter.count();
 
 	// store bind pose data
 	if (!mInitialized) {
@@ -83,23 +76,86 @@ MStatus customDeformer::deform(MDataBlock& block, MItGeometry& iter, const MMatr
 
 		mesh.buildFromMesh(restMeshData);
 
-		MGlobal::displayInfo("INITIALIZING FROM ORIGINAL MESH");
 		mInitialized = true;
 
 	}
 
-	int numVerts = iter.count();
 	if (currentPos.size() != numVerts) {
 		currentPos.resize(numVerts);
 	}
 
-	// Copy all current positions to our vector so we can random-access neighbors later
 	for (iter.reset(); !iter.isDone(); iter.next()) {
 		currentPos[iter.index()] = iter.position();
 	}
 
-	iter.reset();
+	int iterations = 10;
+	//float smoothAlpha = block.inputValue(customDeformer::angle, &returnStatus).asFloat();
+	float smoothAlpha = 0.1f;
 
+	// ping pong buffers smoothing
+	std::vector<MPoint> readPos = currentPos;
+	std::vector<MPoint> writePos = currentPos;
+
+	for (int iterCount = 0; iterCount < iterations; ++iterCount) {
+
+		for (int i = 0; i < numVerts; ++i) {
+
+			if (i >= mesh.vertIDConnections.size()) continue;
+
+			std::vector<int>& neighbors = mesh.vertIDConnections[i];
+			MPoint neighborSum(0, 0, 0);
+			float tensionSum = 0.0f;
+			int valence = 0;
+
+			MPoint myPos = readPos[i];
+
+			for (auto neighborIdx : neighbors) {
+
+				MPoint neighborPos = readPos[neighborIdx];
+				neighborSum += neighborPos;
+
+				double currentEdgeLen = myPos.distanceTo(neighborPos);
+
+				std::pair<int, int> edgePair = std::make_pair(std::min(i, neighborIdx), std::max(i, neighborIdx));
+				
+				if (mesh.vertstoRestLen.count(edgePair)) {
+					float restLen = mesh.vertstoRestLen[edgePair];
+					if (restLen > 0.0001f) {
+						float edgeTension = float((currentEdgeLen - restLen));
+
+						if (edgeTension > 0) {
+							tensionSum += edgeTension;
+						}
+					}
+				}
+				
+				valence++;
+			}
+			if (valence > 0) {
+				MPoint avgPos = neighborSum / valence;
+				float avgTension = tensionSum / valence;
+
+				MVector smoothVec = avgPos - myPos;
+
+				// only smooth stretched area
+
+				float dynamicStiffness = avgTension * envelope;
+
+				if (dynamicStiffness > 1.0f) dynamicStiffness = 1.0f;
+
+				writePos[i] = myPos + (smoothVec * dynamicStiffness);
+			}
+			else { // no neighbors, unaffected
+				writePos[i] = myPos;
+			}
+		}
+		readPos = writePos;
+	}
+	iter.reset();
+	for (; !iter.isDone(); iter.next()) {
+		iter.setPosition(writePos[iter.index()]);
+	}
+	/*
 	for(; !iter.isDone(); iter.next()) {
 
 		// iterate over connected verts map
@@ -156,6 +212,8 @@ MStatus customDeformer::deform(MDataBlock& block, MItGeometry& iter, const MMatr
 		}
 
 	}
+	*/
+
 
 
 	return returnStatus;
