@@ -22,7 +22,6 @@ public:
 
 	static MObject locatorMatrix;
 	static MTypeId id;
-	static MObject angle;
 	static MObject iterations;
 	static MObject smoothAlpha;
 	static MObject wrinkleFreqVal;

@@ -8,7 +8,6 @@
 
 MTypeId customDeformer::id(0x8000f);
 MObject customDeformer::locatorMatrix;
-MObject customDeformer::angle;
 MObject customDeformer::iterations;
 MObject customDeformer::smoothAlpha;
 MObject customDeformer::wrinkleFreqVal;
@@ -32,12 +31,6 @@ MStatus customDeformer::initialize()
 	mAttr.setStorable(false);
 	mAttr.setConnectable(true);
 	addAttribute(locatorMatrix);
-
-	angle = nAttr.create("angle", "ang", MFnNumericData::kFloat, 0);
-	nAttr.setStorable(true);
-	nAttr.setConnectable(true);
-	nAttr.setKeyable(true);
-	addAttribute(angle);
 
 	iterations = nAttr.create("iterations", "iterations", MFnNumericData::kInt, 10);
 	nAttr.setStorable(true);
@@ -76,7 +69,6 @@ MStatus customDeformer::initialize()
 	attributeAffects(customDeformer::wrinkleAmpVal, customDeformer::outputGeom);
 	attributeAffects(customDeformer::compressionThreshold, customDeformer::outputGeom);
 
-	attributeAffects(customDeformer::angle, customDeformer::outputGeom);
 	attributeAffects(customDeformer::locatorMatrix, customDeformer::outputGeom);
 	
 	return MStatus::kSuccess;
@@ -86,7 +78,6 @@ MStatus customDeformer::deform(MDataBlock& block, MItGeometry& iter, const MMatr
 {
 	MStatus returnStatus;
 	MDataHandle envData;
-	float angle;
 	float envelope;
 	float iterations;
 	float smoothAlpha;
@@ -206,7 +197,7 @@ MStatus customDeformer::deform(MDataBlock& block, MItGeometry& iter, const MMatr
 
 				// only smooth stretched area
 
-				float dynamicStiffness = avgTension * envelope;
+				float dynamicStiffness = avgTension * envelope * smoothAlpha;
 
 				if (dynamicStiffness > 1.0f) dynamicStiffness = 1.0f;
 
