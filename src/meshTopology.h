@@ -1,6 +1,9 @@
 #pragma once
 
 #include <maya/MItMeshEdge.h>
+#include <maya/MItMeshPolygon.h>
+#include <maya/MPointArray.h>
+#include <maya/MMatrix.h>
 #include <maya/MFnMesh.h>
 #include <maya/MStatus.h>
 #include <maya/MGlobal.h>
@@ -17,6 +20,12 @@ struct Vertex {
 	std::vector<uint32_t> connected_verts;
 };
 
+struct TriangleData {
+
+	float qInv[2][2];
+	int vertIdx[3];
+};
+
 
 class meshTopology {
 	
@@ -28,8 +37,10 @@ public:
 	meshTopology() {};
 	~meshTopology() {};
 	void buildFromMesh(MObject& mesh);
-	std::map<std::pair<int, int>, float> vertstoRestLen;
+	std::vector<float> vertstoRestLen;
+	std::map<std::pair<int, int>, float> map_vertsToRL;
 	std::unordered_map<int, std::vector<int>> vertIDConnections;
+	std::vector<TriangleData> tritoQInv;
 
 	//const Vertex& getVertex(uint32_t index) const;
 };

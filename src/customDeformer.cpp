@@ -1,4 +1,4 @@
-#include "customDeformer.h"
+﻿#include "customDeformer.h"
 #include "meshTopology.h"
 
 #include <maya/MFnMatrixData.h>
@@ -77,165 +77,242 @@ MStatus customDeformer::initialize()
 MStatus customDeformer::deform(MDataBlock& block, MItGeometry& iter, const MMatrix& /*m*/, unsigned int multiIndex)
 {
 	MStatus returnStatus;
-	MDataHandle envData;
-	float envelope;
-	float iterations;
-	float smoothAlpha;
-	float wrinkleFreqVal;
-	float wrinkleAmpVal;
-	float compressionThreshold;
-	
-	envelope = block.inputValue(customDeformer::envelope, &returnStatus).asFloat();
-	iterations = block.inputValue(customDeformer::iterations, &returnStatus).asInt();
-	smoothAlpha = block.inputValue(customDeformer::smoothAlpha, &returnStatus).asFloat();
-	wrinkleFreqVal = block.inputValue(customDeformer::wrinkleFreqVal, &returnStatus).asFloat();
-	wrinkleAmpVal = block.inputValue(customDeformer::wrinkleAmpVal, &returnStatus).asFloat();
-	compressionThreshold = block.inputValue(customDeformer::compressionThreshold, &returnStatus).asFloat();
 
-	std::vector<MPoint> currentPos;
-	std::vector<MVector> currentNormals;
-	currentPos.clear();
-
-	std::map<std::pair<int, int>, float> tension;
-
+	float envelope = block.inputValue(customDeformer::envelope, &returnStatus).asFloat();
 	if (envelope < 0.001f) return MStatus::kSuccess;
+
+	int iterations = block.inputValue(customDeformer::iterations, &returnStatus).asInt();
+	float smoothAlpha = block.inputValue(customDeformer::smoothAlpha, &returnStatus).asFloat();
+	float wrinkleFreqVal = block.inputValue(customDeformer::wrinkleFreqVal, &returnStatus).asFloat();
+	float wrinkleAmpVal = block.inputValue(customDeformer::wrinkleAmpVal, &returnStatus).asFloat();
+	float compressionThreshold = block.inputValue(customDeformer::compressionThreshold, &returnStatus).asFloat();
 
 	int numVerts = iter.count();
 
+	MArrayDataHandle inputArray = block.inputArrayValue(MPxGeometryFilter::input, &returnStatus);
+	returnStatus = inputArray.jumpToElement(multiIndex);
+	MDataHandle inputHandle = inputArray.inputValue(&returnStatus);
+	MObject currentInputMesh = inputHandle.child(MPxGeometryFilter::inputGeom).asMesh();
 
-	// store bind pose data
+	MFnMesh currentMeshFn(currentInputMesh);
+
+
 	if (!mInitialized) {
-
-		// construct connectivity data (vertex pairs to each edge)
-		MArrayDataHandle inputArray = block.inputArrayValue(MPxGeometryFilter::input, &returnStatus);
-		returnStatus = inputArray.jumpToElement(multiIndex);
-		MDataHandle inputHandle = inputArray.inputValue(&returnStatus);
-
-		MDataHandle geomHandle = inputHandle.child(MPxGeometryFilter::inputGeom);
-		MObject origMesh = geomHandle.asMesh();
-
-		MFnMesh meshFn(origMesh);
-
-		// Create a copy of the mesh data
-		MObject restMeshData = meshFn.copy(origMesh);
-
-		mesh.buildFromMesh(restMeshData);
-
+		mesh.buildFromMesh(currentInputMesh);
 		mInitialized = true;
-
 	}
 
-	if (currentPos.size() != numVerts || currentNormals.size() != numVerts) {
-		currentPos.resize(numVerts);
-		currentNormals.resize(numVerts);
-	}
+	std::vector<MPoint> currentPos(numVerts);
+	std::vector<MVector> currentNormals(numVerts);
 
 	for (iter.reset(); !iter.isDone(); iter.next()) {
-		currentPos[iter.index()] = iter.position();
-		currentNormals[iter.index()] = iter.normal();
+		int idx = iter.index();
+		currentPos[idx] = iter.position();
+		currentNormals[idx] = iter.normal();
 	}
 
-	
-	// ping pong buffers smoothing
 	std::vector<MPoint> readPos = currentPos;
 	std::vector<MPoint> writePos = currentPos;
 
-	for (int iterCount = 0; iterCount < iterations; ++iterCount) {
+	/*
+	  - Compute F = P * Q⁻¹  (deformation gradient); P  = [p1-p0 | p2-p0]
+	  - Compute S = FᵀF       (strain tensor)
+	  - Extract strain values  (S₁₁-1, S₂₂-1, S₁₂) as wrinkle magnitude/direction mask
+	  - Displace vertices along normal, weighted by strain
+	*/
 
-		for (int i = 0; i < numVerts; ++i) {
+	MItMeshPolygon polyIter(currentInputMesh, &returnStatus);
 
-			if (i >= mesh.vertIDConnections.size()) continue;
+	MPointArray trianglePoints;
+	MIntArray triangleVertexIndices;
 
-			std::vector<int>& neighbors = mesh.vertIDConnections[i];
-
-			MPoint myPos = readPos[i];
-			MVector myNormal = currentNormals[i];
-
-			MPoint neighborSum(0, 0, 0);
-			float tensionSum = 0.0f;
-			int valence = 0;
-
-
-			MVector maxCompressionDir(0, 1, 0);
-			float minTension = 0.0f;
-
-			for (auto neighborIdx : neighbors) {
-
-				MPoint neighborPos = readPos[neighborIdx];
-				neighborSum += neighborPos;
-
-				double currentEdgeLen = myPos.distanceTo(neighborPos);
-
-				std::pair<int, int> edgePair = std::make_pair(std::min(i, neighborIdx), std::max(i, neighborIdx));
-				
-				if (mesh.vertstoRestLen.count(edgePair)) {
-					float restLen = mesh.vertstoRestLen[edgePair];
-					if (restLen > 0.0001f) {
-						float edgeTension = float(currentEdgeLen - restLen);
-						float normalizedTension = edgeTension / restLen;
-
-						if (edgeTension > 0) {
-							tensionSum += edgeTension;
-						}
-						if (normalizedTension < minTension) {
-							minTension = normalizedTension;
-							maxCompressionDir = (neighborPos - myPos).normal();
-						}
-
-					}
-				}
-				
-				valence++;
-			}
-			
-			MVector totalOffset(0, 0, 0);
-			if (valence > 0) {
-				MPoint avgPos = neighborSum / valence;
-				float avgTension = tensionSum / valence;
-
-				MVector smoothVec = avgPos - myPos;
-
-				// only smooth stretched area
-
-				float dynamicStiffness = avgTension * envelope * smoothAlpha;
-
-				if (dynamicStiffness > 1.0f) dynamicStiffness = 1.0f;
-
-				totalOffset += (smoothVec * dynamicStiffness);
-			}
-
-			float threshold = -0.1f; // User attribute: compressionThreshold
-			if (minTension < threshold) {
-
-				// A. Magnitude: How deep is the wrinkle?
-				// Map tension (e.g. -0.5) to a positive multiplier (0.0 to 1.0)
-				float compressionFactor = (compressionThreshold - minTension); // The more negative, the bigger this gets
-
-				// B. Phase: Where are we on the wave?
-				// We project our position onto the compression direction.
-				// This ensures vertices "in a line" along the compression get different sine values.
-				MVector finalPos = myPos;
-				double phase = (finalPos * maxCompressionDir); // Dot Product acts as 1D projection
-
-				// C. The Wave Function
-				// sin(Position * Frequency) * Amplitude * CompressionStrength
-				double wave = sin(phase * wrinkleFreqVal);
-
-				// D. Displacement
-				MVector displacement = myNormal * (wave * wrinkleAmpVal * compressionFactor * envelope);
-
-				totalOffset += displacement;
-			}
-
-			writePos[i] = myPos + totalOffset;
-		}
-		readPos = writePos;
+	for (; !polyIter.isDone(); polyIter.next()) {
+		polyIter.getTriangles(trianglePoints, triangleVertexIndices, MSpace::kObject);
 	}
+
+	for (int i = 0; i < mesh.tritoQInv.size(); ++i) {
+		TriangleData triData = mesh.tritoQInv[i];
+
+		// get the vertex ids for for the current tri
+		int vertIdx0 = triData.vertIdx[0];
+		int vertIdx1 = triData.vertIdx[1];
+		int vertIdx2 = triData.vertIdx[2];
+
+		// [ q00  q01
+		//   q10  q11]
+		float q00 = triData.qInv[0][0];
+		float q01 = triData.qInv[0][1];
+		float q10 = triData.qInv[1][0];
+		float q11 = triData.qInv[1][1];
+
+		MPoint aPos = trianglePoints[vertIdx0];
+		MPoint bPos = trianglePoints[vertIdx1];
+		MPoint cPos = trianglePoints[vertIdx2];
+
+		//P = [p1 - p0 | p2 - p0]
+		
+		// [ p00  p01       [ q00  q01
+		//   p10  p11   X     q10  q11 ]
+		//   p20  p21]
+		float p00 = bPos[0] - aPos[0];
+		float p01 = cPos[0] - aPos[0];
+		float p10 = bPos[1] - aPos[1];
+		float p11 = cPos[1] - aPos[1];
+		float p20 = bPos[2] - aPos[2];
+		float p21 = cPos[2] - aPos[2];
+
+		// Compute F = P * Q⁻¹(deformation gradient)
+		float f00 = p00 * q00 + p01 * q10;
+		float f01 = p00 * q01 + p01 * q11;
+		float f10 = p10 * q00 + p11 * q10;
+		float f11 = p10 * q01 + p11 * q11;
+		float f20 = p20 * q00 + p21 * q10;
+		float f21 = p20 * q01 + p21 * q11;
+
+
+		// [ f00  f01			
+		//   f10  f11   => F^T => [ f00  f10  f20
+		//   f20  f21]				f01  f11  f21]	
+
+		float t00 = f00;
+		float t01 = f10;
+		float t02 = f20;
+		float t10 = f01;
+		float t11 = f11;
+		float t12 = f21;
+
+		// S = FᵀF (strain tensor)	
+		//							[ f00  f01
+		// [ t00  t01  t02   X        f10  f11
+		//   t10  t11  t12 ]	      f20  f21 ]
+
+		float s00 = t00 * f00 + t01 * f10 + t02 * f20;
+		float s01 = t00 * f01 + t01 * f11 + t02 * f21;
+		float s10 = t10 * f00 + t11 * f11 + t12 * f20;
+		float s11 = t10 * f01 + t11 * f11 + t12 * f21;
+
+		//(S₁₁ - 1, S₂₂ - 1, S₁₂) as wrinkle magnitude / direction mask
+		// S00 -1, S11 - 1, S01)
+		MVector wrinkleMask(s00 - 1.0f, s11 - 1.0f, s01);
+
+		MVector normal = currentNormals[i];
+
+		float weight = normal * wrinkleMask;
+
+		
+		MVector tempPos = currentPos[i];
+		writePos[i].x = tempPos.x + (normal * wrinkleMask * envelope);
+		writePos[i].y = tempPos.y + (normal * wrinkleMask * envelope);
+		writePos[i].z = tempPos.z + (normal * wrinkleMask * envelope);
+
+	}
+
 	iter.reset();
 	for (; !iter.isDone(); iter.next()) {
 		iter.setPosition(writePos[iter.index()]);
 	}
-	
 
-	return returnStatus;
+	/*
+	for (int iterCount = 0; iterCount < iterations; ++iterCount) {
+	#pragma omp parallel for
+		for (int i = 0; i < numVerts; ++i) {
+			if (i >= mesh.vertIDConnections.size()) continue;
+
+			MPoint myPos = readPos[i];
+			MPoint neighborSum(0, 0, 0);
+			float tensionSum = 0.0f;
+			int valence = 0;
+
+			for (auto neighborIdx : mesh.vertIDConnections[i]) {
+				MPoint neighborPos = readPos[neighborIdx];
+				neighborSum += neighborPos;
+
+				double currentEdgeLen = myPos.distanceTo(neighborPos);
+				std::pair<int, int> edgePair = std::make_pair(std::min(i, neighborIdx), std::max(i, neighborIdx));
+
+				
+				float restLen = mesh.vertstoRestLen[i];
+				if (restLen > 0.0001f) {
+					float normalizedTension = float(currentEdgeLen - restLen) / restLen;
+					if (normalizedTension > 0) tensionSum += normalizedTension;
+				}
+	
+				valence++;
+			}
+
+			if (valence > 0) {
+				MPoint avgPos = neighborSum / valence;
+				float avgTension = tensionSum / valence;
+				MVector smoothVec = avgPos - myPos;
+
+				float dynamicStiffness = avgTension * envelope * smoothAlpha;
+				if (dynamicStiffness > 1.0f) dynamicStiffness = 1.0f;
+
+				writePos[i] = myPos + (smoothVec * dynamicStiffness);
+			}
+		}
+		readPos = writePos; // Swap buffer
+	}
+
+
+	#pragma omp parallel for
+	for (int i = 0; i < numVerts; ++i) {
+		if (i >= mesh.vertIDConnections.size()) continue;
+
+		MPoint myPos = readPos[i];
+		MVector myNormal = currentNormals[i];
+
+		MVector W(1, 0, 0);
+
+		MVector C = (W ^ myNormal).normal();
+
+		// measure Anisotropic Compression
+		float projectedCompression = 0.0f;
+		float totalWeight = 0.0f;
+
+		for (auto neighborIdx : mesh.vertIDConnections[i]) {
+			MVector edgeDir = (readPos[neighborIdx] - myPos).normal();
+			double currentEdgeLen = myPos.distanceTo(readPos[neighborIdx]);
+
+			std::pair<int, int> edgePair = std::make_pair(std::min(i, neighborIdx), std::max(i, neighborIdx));
+			
+			float restLen = mesh.vertstoRestLen[i];
+			if (restLen > 0.0001f) {
+					
+				float normalizedTension = float(currentEdgeLen - restLen) / restLen;
+				float alignmentWeight = abs(edgeDir * C);
+
+				if (normalizedTension < 0) {
+					projectedCompression += (normalizedTension * alignmentWeight);
+				}
+				totalWeight += alignmentWeight;
+			}
+		
+		}
+
+		if (totalWeight > 0.0001f) {
+			projectedCompression /= totalWeight;
+		}
+
+		MVector wrinkleOffset(1, 0, 0);
+
+		if (projectedCompression < compressionThreshold) {
+			float compressionFactor = (compressionThreshold - projectedCompression);
+
+			MVector tempPos = myPos;
+			double phase = (tempPos * C);
+			double wave = sin(phase * wrinkleFreqVal);
+
+			wrinkleOffset = myNormal * (wave * wrinkleAmpVal * compressionFactor * envelope);
+		}
+
+		writePos[i] = myPos + wrinkleOffset;
+	}
+
+	iter.reset();
+	for (; !iter.isDone(); iter.next()) {
+		iter.setPosition(writePos[iter.index()]);
+	}
+	*/
+	return MStatus::kSuccess;
 }
