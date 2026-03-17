@@ -98,6 +98,8 @@ void meshTopology::buildFromMesh(MObject& mesh) {
 				float qi11 = q00 * inv_det;
 
 
+				//MGlobal::displayInfo(MString("det: ") + det);
+
 				TriangleData triData;
 				triData.qInv[0][0] = qi00;
 				triData.qInv[0][1] = qi01;

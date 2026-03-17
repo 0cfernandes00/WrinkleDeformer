@@ -1,5 +1,6 @@
 ﻿#include "customDeformer.h"
 #include "meshTopology.h"
+#include <omp.h>
 
 #include <maya/MFnMatrixData.h>
 #include <maya/MFnMatrixAttribute.h>
@@ -111,7 +112,7 @@ MStatus customDeformer::deform(MDataBlock& block, MItGeometry& iter, const MMatr
 		currentNormals[idx] = iter.normal();
 	}
 
-	std::vector<MPoint> readPos = currentPos;
+	//std::vector<MPoint> readPos = currentPos;
 	std::vector<MPoint> writePos = currentPos;
 
 	/*
@@ -121,16 +122,24 @@ MStatus customDeformer::deform(MDataBlock& block, MItGeometry& iter, const MMatr
 	  - Displace vertices along normal, weighted by strain
 	*/
 
-	MItMeshPolygon polyIter(currentInputMesh, &returnStatus);
+	MPointArray allPoints;
+	currentMeshFn.getPoints(allPoints, MSpace::kObject);
 
-	MPointArray trianglePoints;
-	MIntArray triangleVertexIndices;
+	MFloatVectorArray allNormals;
+	currentMeshFn.getVertexNormals(false, allNormals, MSpace::kObject);
 
-	for (; !polyIter.isDone(); polyIter.next()) {
-		polyIter.getTriangles(trianglePoints, triangleVertexIndices, MSpace::kObject);
-	}
+	int numTris = mesh.tritoQInv.size();
 
-	for (int i = 0; i < mesh.tritoQInv.size(); ++i) {
+	int numThreads = omp_get_max_threads();
+	std::vector<std::vector<MVector>> threadAccum(numThreads,
+		std::vector<MVector>(numVerts, MVector(0, 0, 0)));
+	std::vector<std::vector<int>> threadCount(numThreads,
+		std::vector<int>(numVerts, 0));
+
+
+	#pragma omp parallel for schedule(static)
+	for (int i = 0; i < numTris; ++i) {
+		int tid = omp_get_thread_num();
 		TriangleData triData = mesh.tritoQInv[i];
 
 		// get the vertex ids for for the current tri
@@ -145,9 +154,9 @@ MStatus customDeformer::deform(MDataBlock& block, MItGeometry& iter, const MMatr
 		float q10 = triData.qInv[1][0];
 		float q11 = triData.qInv[1][1];
 
-		MPoint aPos = trianglePoints[vertIdx0];
-		MPoint bPos = trianglePoints[vertIdx1];
-		MPoint cPos = trianglePoints[vertIdx2];
+		MPoint aPos = allPoints[vertIdx0];
+		MPoint bPos = allPoints[vertIdx1];
+		MPoint cPos = allPoints[vertIdx2];
 
 		//P = [p1 - p0 | p2 - p0]
 		
@@ -169,11 +178,9 @@ MStatus customDeformer::deform(MDataBlock& block, MItGeometry& iter, const MMatr
 		float f20 = p20 * q00 + p21 * q10;
 		float f21 = p20 * q01 + p21 * q11;
 
-
 		// [ f00  f01			
 		//   f10  f11   => F^T => [ f00  f10  f20
 		//   f20  f21]				f01  f11  f21]	
-
 		float t00 = f00;
 		float t01 = f10;
 		float t02 = f20;
@@ -185,134 +192,73 @@ MStatus customDeformer::deform(MDataBlock& block, MItGeometry& iter, const MMatr
 		//							[ f00  f01
 		// [ t00  t01  t02   X        f10  f11
 		//   t10  t11  t12 ]	      f20  f21 ]
-
 		float s00 = t00 * f00 + t01 * f10 + t02 * f20;
 		float s01 = t00 * f01 + t01 * f11 + t02 * f21;
-		float s10 = t10 * f00 + t11 * f11 + t12 * f20;
+		float s10 = t10 * f00 + t11 * f10 + t12 * f20;
 		float s11 = t10 * f01 + t11 * f11 + t12 * f21;
 
 		//(S₁₁ - 1, S₂₂ - 1, S₁₂) as wrinkle magnitude / direction mask
-		// S00 -1, S11 - 1, S01)
-		MVector wrinkleMask(s00 - 1.0f, s11 - 1.0f, s01);
+		// (S00 -1, S11 - 1, S01)
+		float strainMagnitude = (s00 - 1.0f) + (s11 - 1.0f);
 
-		MVector normal = currentNormals[i];
+		if (strainMagnitude >= 0.0f) continue;
 
-		float weight = normal * wrinkleMask;
-
+		for (int j = 0; j < 3; ++j) {
 		
-		MVector tempPos = currentPos[i];
-		writePos[i].x = tempPos.x + (normal * wrinkleMask * envelope);
-		writePos[i].y = tempPos.y + (normal * wrinkleMask * envelope);
-		writePos[i].z = tempPos.z + (normal * wrinkleMask * envelope);
+			int vertIdx = triData.vertIdx[j];
+			if (vertIdx > numVerts) continue;
 
+			threadAccum[tid][vertIdx] += MVector(allNormals[vertIdx]) * strainMagnitude;
+			threadCount[tid][vertIdx]++;
+		}
 	}
-
-	iter.reset();
-	for (; !iter.isDone(); iter.next()) {
-		iter.setPosition(writePos[iter.index()]);
-	}
-
-	/*
-	for (int iterCount = 0; iterCount < iterations; ++iterCount) {
-	#pragma omp parallel for
-		for (int i = 0; i < numVerts; ++i) {
-			if (i >= mesh.vertIDConnections.size()) continue;
-
-			MPoint myPos = readPos[i];
-			MPoint neighborSum(0, 0, 0);
-			float tensionSum = 0.0f;
-			int valence = 0;
-
-			for (auto neighborIdx : mesh.vertIDConnections[i]) {
-				MPoint neighborPos = readPos[neighborIdx];
-				neighborSum += neighborPos;
-
-				double currentEdgeLen = myPos.distanceTo(neighborPos);
-				std::pair<int, int> edgePair = std::make_pair(std::min(i, neighborIdx), std::max(i, neighborIdx));
-
-				
-				float restLen = mesh.vertstoRestLen[i];
-				if (restLen > 0.0001f) {
-					float normalizedTension = float(currentEdgeLen - restLen) / restLen;
-					if (normalizedTension > 0) tensionSum += normalizedTension;
-				}
 	
-				valence++;
-			}
-
-			if (valence > 0) {
-				MPoint avgPos = neighborSum / valence;
-				float avgTension = tensionSum / valence;
-				MVector smoothVec = avgPos - myPos;
-
-				float dynamicStiffness = avgTension * envelope * smoothAlpha;
-				if (dynamicStiffness > 1.0f) dynamicStiffness = 1.0f;
-
-				writePos[i] = myPos + (smoothVec * dynamicStiffness);
-			}
+	for (int k = 0; k < numVerts; ++k) {
+		MVector accum(0, 0, 0);
+		int count = 0;
+		for (int t = 0; t < numThreads; ++t) {
+			accum += threadAccum[t][k];
+			count += threadCount[t][k];
 		}
-		readPos = writePos; // Swap buffer
+		if (count > 0) {
+			accum /= count;
+		}
+		float strainWeight = accum.length(); // scalar compression magnitude
+
+		if (strainWeight > 0.0001f) {
+			MVector normal = MVector(allNormals[k]);
+
+			// Use strain magnitude to gate the wrinkle
+			// Use position projected onto a wrinkle direction for the wave phase
+			MPoint pos = allPoints[k];
+
+			// Wrinkle direction - across the compression axis
+			// For now use world X as wrinkle direction, can be made anisotropic later
+			double phase = pos.x * wrinkleFreqVal;
+			double wave = sin(phase);
+
+			float wrinkleDisp = (float)(wave * wrinkleAmpVal * strainWeight * envelope);
+			writePos[k] = allPoints[k] + normal * wrinkleDisp;
+		}
+		else {
+			writePos[k] = allPoints[k];
+		}
 	}
 
-
-	#pragma omp parallel for
-	for (int i = 0; i < numVerts; ++i) {
-		if (i >= mesh.vertIDConnections.size()) continue;
-
-		MPoint myPos = readPos[i];
-		MVector myNormal = currentNormals[i];
-
-		MVector W(1, 0, 0);
-
-		MVector C = (W ^ myNormal).normal();
-
-		// measure Anisotropic Compression
-		float projectedCompression = 0.0f;
-		float totalWeight = 0.0f;
-
-		for (auto neighborIdx : mesh.vertIDConnections[i]) {
-			MVector edgeDir = (readPos[neighborIdx] - myPos).normal();
-			double currentEdgeLen = myPos.distanceTo(readPos[neighborIdx]);
-
-			std::pair<int, int> edgePair = std::make_pair(std::min(i, neighborIdx), std::max(i, neighborIdx));
-			
-			float restLen = mesh.vertstoRestLen[i];
-			if (restLen > 0.0001f) {
-					
-				float normalizedTension = float(currentEdgeLen - restLen) / restLen;
-				float alignmentWeight = abs(edgeDir * C);
-
-				if (normalizedTension < 0) {
-					projectedCompression += (normalizedTension * alignmentWeight);
-				}
-				totalWeight += alignmentWeight;
-			}
-		
-		}
-
-		if (totalWeight > 0.0001f) {
-			projectedCompression /= totalWeight;
-		}
-
-		MVector wrinkleOffset(1, 0, 0);
-
-		if (projectedCompression < compressionThreshold) {
-			float compressionFactor = (compressionThreshold - projectedCompression);
-
-			MVector tempPos = myPos;
-			double phase = (tempPos * C);
-			double wave = sin(phase * wrinkleFreqVal);
-
-			wrinkleOffset = myNormal * (wave * wrinkleAmpVal * compressionFactor * envelope);
-		}
-
-		writePos[i] = myPos + wrinkleOffset;
+	int compressedVerts = 0;
+	float maxDisp = 0.0f;
+	for (int k = 0; k < numVerts; ++k) {
+		MVector d = writePos[k] - allPoints[k];
+		float len = d.length();
+		if (len > 0.0001f) compressedVerts++;
+		if (len > maxDisp) maxDisp = len;
 	}
+	MGlobal::displayInfo(MString("Compressed verts: ") + compressedVerts +
+		MString(" MaxDisp: ") + maxDisp);
 
 	iter.reset();
 	for (; !iter.isDone(); iter.next()) {
 		iter.setPosition(writePos[iter.index()]);
 	}
-	*/
 	return MStatus::kSuccess;
 }
