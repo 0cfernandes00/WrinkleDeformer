@@ -1,6 +1,7 @@
 ﻿#include "customDeformer.h"
 #include "meshTopology.h"
 #include <omp.h>
+#include <queue>
 
 #include <maya/MFnMatrixData.h>
 #include <maya/MFnMatrixAttribute.h>
@@ -135,6 +136,10 @@ MStatus customDeformer::deform(MDataBlock& block, MItGeometry& iter, const MMatr
 		std::vector<MVector>(numVerts, MVector(0, 0, 0)));
 	std::vector<std::vector<int>> threadCount(numThreads,
 		std::vector<int>(numVerts, 0));
+	std::vector<std::vector<MVector>> threadWrinkleDir(numThreads,
+		std::vector<MVector>(numVerts, MVector(0, 0, 0)));
+	std::vector<std::vector<float>> threadPhysAmp(numThreads,
+		std::vector<float>(numVerts, 0.0f));
 
 
 	#pragma omp parallel for schedule(static)
@@ -200,6 +205,39 @@ MStatus customDeformer::deform(MDataBlock& block, MItGeometry& iter, const MMatr
 		//(S₁₁ - 1, S₂₂ - 1, S₁₂) as wrinkle magnitude / direction mask
 		// (S00 -1, S11 - 1, S01)
 		float strainMagnitude = (s00 - 1.0f) + (s11 - 1.0f);
+		// Principal direction via simple 2x2 eigenvector
+		float angle = 0.5f * atan2(2.0f * s01, s00 - s11);
+
+		// Get minimum principal strain - the most compressed direction
+		// From the 2x2 eigenvalue decomposition of S
+		float trace = s00 + s11;
+		float det = s00 * s11 - s01 * s10;
+		float disc = sqrt(std::max(0.0f, (trace * trace * 0.25f) - det));
+		float eigenMin = (trace * 0.5f) - disc; // most compressed eigenvalue
+
+		// Compression factor - how much the surface shrank in that direction
+		float compressionFactor = sqrt(std::max(0.0f, eigenMin));
+
+		float waveLen = 1.0f / wrinkleFreqVal;
+		float physicalAmplitude = 0.0f;
+		if (compressionFactor > 0.0001f && compressionFactor < 1.0f) {
+			float invC = 1.0f / compressionFactor;
+			physicalAmplitude = (waveLen / (2.0f * M_PI)) *
+				sqrt(std::max(0.0f, invC * invC - 1.0f));
+		}
+
+		physicalAmplitude *= wrinkleAmpVal;
+	
+		float compX = cos(angle);
+		float compY = sin(angle);
+
+		float wrinkleX = -compY;
+		float wrinkleY = compX;
+
+		// Transform wrinkle direction from UV space to world space using n1, n2
+		MVector n1 = triData.normal[0];
+		MVector n2 = triData.normal[1];
+		MVector wrinkleDirWorld = (n1 * wrinkleX + n2 * wrinkleY).normal();
 
 		if (strainMagnitude >= 0.0f) continue;
 
@@ -208,43 +246,98 @@ MStatus customDeformer::deform(MDataBlock& block, MItGeometry& iter, const MMatr
 			int vertIdx = triData.vertIdx[j];
 			if (vertIdx > numVerts) continue;
 
+			if (threadCount[tid][vertIdx] > 0) {
+				// Flip if pointing roughly opposite to what's already accumulated
+				MVector existing = threadWrinkleDir[tid][vertIdx];
+				if ((existing * wrinkleDirWorld) < 0.0f) {
+					wrinkleDirWorld = -wrinkleDirWorld;
+				}
+			}
+
 			threadAccum[tid][vertIdx] += MVector(allNormals[vertIdx]) * strainMagnitude;
+			threadWrinkleDir[tid][vertIdx] += wrinkleDirWorld;
 			threadCount[tid][vertIdx]++;
+			threadPhysAmp[tid][vertIdx] += physicalAmplitude;
 		}
+
 	}
+
+	std::vector<double> wrinklePhase(numVerts, -1.0); // -1 = unvisited
+	std::vector<float> strainMask(numVerts, 0.0f);    // precomputed per vertex
+	std::vector<MVector> vertexDirs(numVerts, MVector(0, 0, 0));
+	std::vector<float> vertexAmps(numVerts, 0.0f);
 	
 	for (int k = 0; k < numVerts; ++k) {
 		MVector accum(0, 0, 0);
+		MVector dirAccum(0, 0, 0);
+		float physicalAmplitude = 0.0f;
 		int count = 0;
 		for (int t = 0; t < numThreads; ++t) {
 			accum += threadAccum[t][k];
 			count += threadCount[t][k];
+			dirAccum += threadWrinkleDir[t][k];
+			physicalAmplitude += threadPhysAmp[t][k];
 		}
 		if (count > 0) {
 			accum /= count;
+			dirAccum = dirAccum.normal();
+			strainMask[k] = accum.length() / count;
+			vertexDirs[k] = dirAccum.normal();
+			vertexAmps[k] = physicalAmplitude / count;
 		}
-		float strainWeight = accum.length(); // scalar compression magnitude
+	}
 
-		if (strainWeight > 0.0001f) {
+	/*	BFS Search	*/
+
+	// Seed from vertices with zero strain (boundary of wrinkle region)
+	std::queue<int> frontier;
+	for (int k = 0; k < numVerts; ++k) {
+		if (strainMask[k] < 0.0001f) {
+			wrinklePhase[k] = 0.0;
+			frontier.push(k);
+		}
+	}
+
+	// Propagate phase through connectivity
+	while (!frontier.empty()) {
+		int current = frontier.front();
+		frontier.pop();
+
+		MPoint currentPos = allPoints[current];
+		MVector currentDir = vertexDirs[current];
+
+		for (int neighborIdx : mesh.vertIDConnections[current]) {
+			if (wrinklePhase[neighborIdx] >= 0.0) continue; // already visited
+
+			MPoint neighborPos = allPoints[neighborIdx];
+			MVector edge = MVector(neighborPos - currentPos);
+
+			// Project edge onto wrinkle direction to get phase increment
+			double phaseIncrement = (edge * currentDir) * wrinkleFreqVal;
+			wrinklePhase[neighborIdx] = wrinklePhase[current] + phaseIncrement;
+			frontier.push(neighborIdx);
+		}
+	}
+
+	for (int k = 0; k < numVerts; ++k) {
+
+		if (strainMask[k] > 0.0001f) {
 			MVector normal = MVector(allNormals[k]);
-
-			// Use strain magnitude to gate the wrinkle
-			// Use position projected onto a wrinkle direction for the wave phase
 			MPoint pos = allPoints[k];
+			MVector tempPos = MVector(pos.x, pos.y, pos.z);
 
-			// Wrinkle direction - across the compression axis
-			// For now use world X as wrinkle direction, can be made anisotropic later
-			double phase = pos.x * wrinkleFreqVal;
-			double wave = sin(phase);
+			double phase = wrinklePhase[k];
+			double wave = pow(abs(sin(phase)), 0.5) * (sin(phase) > 0 ? 1.0 : -1.0);
 
-			float wrinkleDisp = (float)(wave * wrinkleAmpVal * strainWeight * envelope);
+			float wrinkleDisp = (float)(wave * vertexAmps[k] * envelope);
 			writePos[k] = allPoints[k] + normal * wrinkleDisp;
 		}
 		else {
 			writePos[k] = allPoints[k];
 		}
 	}
-
+	
+	/*
 	int compressedVerts = 0;
 	float maxDisp = 0.0f;
 	for (int k = 0; k < numVerts; ++k) {
@@ -255,6 +348,7 @@ MStatus customDeformer::deform(MDataBlock& block, MItGeometry& iter, const MMatr
 	}
 	MGlobal::displayInfo(MString("Compressed verts: ") + compressedVerts +
 		MString(" MaxDisp: ") + maxDisp);
+	*/
 
 	iter.reset();
 	for (; !iter.isDone(); iter.next()) {

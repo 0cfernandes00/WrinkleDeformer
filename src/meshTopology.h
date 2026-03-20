@@ -24,6 +24,7 @@ struct TriangleData {
 
 	float qInv[2][2];
 	int vertIdx[3];
+	MVector normal[2];
 };
 
 

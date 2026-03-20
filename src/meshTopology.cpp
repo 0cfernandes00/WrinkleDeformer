@@ -58,7 +58,6 @@ void meshTopology::buildFromMesh(MObject& mesh) {
 				MVector uv_1(uv1[0], uv1[1]);
 				MVector uv_2(uv2[0], uv2[1]);
 
-
 				// compute uv space tangents
 				// (tu,tv) = (x1 −x0,x2 −x0) (u1 −u0,u2 −u0)^-1
 				MVector e1_world = (p1 - p0);  // 3x2
@@ -88,17 +87,14 @@ void meshTopology::buildFromMesh(MObject& mesh) {
 				float q10 = n2 * e1_world;
 				float q11 = n2 * e2_world;
 
-
 				det = q00 * q11 - q01 * q10;
 				inv_det = 1.0f / det;
+
 				// Q⁻¹ = (1/det) * [[ q11, -q01], [-q10,  q00]]
 				float qi00 = q11 * inv_det;
 				float qi01 = -q01 * inv_det;
 				float qi10 = -q10 * inv_det;
 				float qi11 = q00 * inv_det;
-
-
-				//MGlobal::displayInfo(MString("det: ") + det);
 
 				TriangleData triData;
 				triData.qInv[0][0] = qi00;
@@ -108,6 +104,8 @@ void meshTopology::buildFromMesh(MObject& mesh) {
 				triData.vertIdx[0] = v0_idx;
 				triData.vertIdx[1] = v1_idx;
 				triData.vertIdx[2] = v2_idx;
+				triData.normal[0] = n1;
+				triData.normal[1] = n2;
 		
 				tritoQInv.push_back(triData);
 			}
