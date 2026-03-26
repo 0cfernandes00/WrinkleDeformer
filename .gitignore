@@ -1,0 +1,17 @@
+build/.vs/helloMaya/v17/Browse.VC.db
+build/.vs/helloMaya/v17/DocumentLayout.backup.json
+build/.vs/helloMaya/v17/DocumentLayout.json
+build/.vs/helloMaya/v17/ipch/AutoPCH/15ef445e96801132/CUSTOMDEFORMER.ipch
+build/.vs/helloMaya/v17/ipch/AutoPCH/36821823304027fe/SIMPLEDEFORMERNODE.ipch
+build/.vs/helloMaya/v17/ipch/AutoPCH/40af72aed959d770/HELLO_MAYA.ipch
+build/.vs/helloMaya/v17/ipch/AutoPCH/476444347833e036/HELLO_MAYA.ipch
+build/.vs/helloMaya/v17/ipch/AutoPCH/50e716abfd78aabf/MESHTOPOLOGY.ipch
+build/.vs/helloMaya/v17/ipch/AutoPCH/5e5ba22795bec724/CUSTOMDEFORMER.ipch
+build/.vs/helloMaya/v17/ipch/AutoPCH/aae87838efe8f0e2/MESHTOPOLOGY.ipch
+build/.vs/helloMaya/v17/ipch/AutoPCH/acb7087fd8729fbc/SIMPLEDEFORMERNODE.ipch
+build/.vs/helloMaya/v17/ipch/AutoPCH/b5355a61f5cc3c82/YTWISTNODE.ipch
+build/.vs/helloMaya/v17/Solution.VC.db
+/build
+/cmake
+.gitattributes
+CMakeLists.txt

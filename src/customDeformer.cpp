@@ -46,13 +46,13 @@ MStatus customDeformer::initialize()
 	nAttr.setKeyable(true);
 	addAttribute(smoothAlpha);
 
-	wrinkleFreqVal = nAttr.create("wrinkleFreq", "wrinkleFreq", MFnNumericData::kFloat, 10.0f);
+	wrinkleFreqVal = nAttr.create("wrinkleFreq", "wrinkleFreq", MFnNumericData::kFloat, 5.0f);
 	nAttr.setStorable(true);
 	nAttr.setConnectable(true);
 	nAttr.setKeyable(true);
 	addAttribute(wrinkleFreqVal);
 
-	wrinkleAmpVal = nAttr.create("wrinkleAmp", "wrinkleAmp", MFnNumericData::kFloat, 0.5f);
+	wrinkleAmpVal = nAttr.create("wrinkleAmp", "wrinkleAmp", MFnNumericData::kFloat, 1.5f);
 	nAttr.setStorable(true);
 	nAttr.setConnectable(true);
 	nAttr.setKeyable(true);
@@ -100,21 +100,20 @@ MStatus customDeformer::deform(MDataBlock& block, MItGeometry& iter, const MMatr
 
 
 	if (!mInitialized) {
-		mesh.buildFromMesh(currentInputMesh);
+		mesh.buildFromMesh(currentInputMesh, numVerts);
 		mInitialized = true;
 	}
 
-	std::vector<MPoint> currentPos(numVerts);
-	std::vector<MVector> currentNormals(numVerts);
-
+	//std::vector<MPoint> currentPos(numVerts);
+	//std::vector<MVector> currentNormals(numVerts);
+	/*
 	for (iter.reset(); !iter.isDone(); iter.next()) {
 		int idx = iter.index();
-		currentPos[idx] = iter.position();
+		//currentPos[idx] = iter.position();
 		currentNormals[idx] = iter.normal();
 	}
+	*/
 
-	//std::vector<MPoint> readPos = currentPos;
-	std::vector<MPoint> writePos = currentPos;
 
 	/*
 	  - Compute F = P * Q⁻¹  (deformation gradient); P  = [p1-p0 | p2-p0]
@@ -132,20 +131,63 @@ MStatus customDeformer::deform(MDataBlock& block, MItGeometry& iter, const MMatr
 	int numTris = mesh.tritoQInv.size();
 
 	int numThreads = omp_get_max_threads();
-	std::vector<std::vector<MVector>> threadAccum(numThreads,
-		std::vector<MVector>(numVerts, MVector(0, 0, 0)));
-	std::vector<std::vector<int>> threadCount(numThreads,
-		std::vector<int>(numVerts, 0));
-	std::vector<std::vector<MVector>> threadWrinkleDir(numThreads,
-		std::vector<MVector>(numVerts, MVector(0, 0, 0)));
-	std::vector<std::vector<float>> threadPhysAmp(numThreads,
-		std::vector<float>(numVerts, 0.0f));
 
+	if (numVerts != m_cachedNumVerts || numThreads != m_cachedNumThreads) {
+		m_threadAccum.assign(numThreads, std::vector<MVector>(numVerts));
+		m_threadCount.assign(numThreads, std::vector<int>(numVerts, 0));
+		m_threadWrinkleDir.assign(numThreads, std::vector<MVector>(numVerts));
+		m_threadPhysAmp.assign(numThreads, std::vector<float>(numVerts, 0.0f));
+
+		m_wrinklePhase.assign(numVerts, -1.0);
+		m_strainMask.assign(numVerts, 0.0f);
+		m_vertexDirs.assign(numVerts, MVector(0, 0, 0));
+		m_vertexAmps.assign(numVerts, 0.0f);
+
+		m_cachedNumVerts = numVerts;
+		m_cachedNumThreads = numThreads;
+
+		m_pts.resize(numVerts * 3);
+		m_nrms.resize(numVerts * 3);
+		m_currentPos.resize(numVerts);
+		m_writePos.resize(numVerts);
+
+		m_visited.assign(numVerts, false);
+		m_isBoundary.assign(numVerts, false);
+		m_currentFrontier.reserve(numVerts);
+		m_nextFrontier.reserve(numVerts);
+	}
+
+	for (int t = 0; t < numThreads; ++t) {
+		std::fill(m_threadAccum[t].begin(), m_threadAccum[t].end(), MVector(0, 0, 0));
+		std::fill(m_threadCount[t].begin(), m_threadCount[t].end(), 0);
+		std::fill(m_threadWrinkleDir[t].begin(), m_threadWrinkleDir[t].end(), MVector(0, 0, 0));
+		std::fill(m_threadPhysAmp[t].begin(), m_threadPhysAmp[t].end(), 0.0f);
+	}
+
+	std::fill(m_wrinklePhase.begin(), m_wrinklePhase.end(), -1.0);
+	std::fill(m_strainMask.begin(), m_strainMask.end(), 0.0f);
+	std::fill(m_vertexDirs.begin(), m_vertexDirs.end(), MVector(0, 0, 0));
+	std::fill(m_vertexAmps.begin(), m_vertexAmps.end(), 0.0f);
+	std::fill(m_visited.begin(), m_visited.end(), false);
+	std::fill(m_isBoundary.begin(), m_isBoundary.end(), false);
+	m_currentFrontier.clear();
+	m_nextFrontier.clear();
+
+	m_writePos = m_currentPos;
+
+	for (int k = 0; k < numVerts; ++k) {
+		m_pts[k * 3] = allPoints[k].x;
+		m_pts[k * 3 + 1] = allPoints[k].y;
+		m_pts[k * 3 + 2] = allPoints[k].z;
+		m_nrms[k * 3] = allNormals[k].x;
+		m_nrms[k * 3 + 1] = allNormals[k].y;
+		m_nrms[k * 3 + 2] = allNormals[k].z;
+	}
 
 	#pragma omp parallel for schedule(static)
 	for (int i = 0; i < numTris; ++i) {
 		int tid = omp_get_thread_num();
-		TriangleData triData = mesh.tritoQInv[i];
+		const TriangleData& triData = mesh.tritoQInv[i];
 
 		// get the vertex ids for for the current tri
 		int vertIdx0 = triData.vertIdx[0];
@@ -159,9 +201,9 @@ MStatus customDeformer::deform(MDataBlock& block, MItGeometry& iter, const MMatr
 		float q10 = triData.qInv[1][0];
 		float q11 = triData.qInv[1][1];
 
-		MPoint aPos = allPoints[vertIdx0];
-		MPoint bPos = allPoints[vertIdx1];
-		MPoint cPos = allPoints[vertIdx2];
+		MPoint aPos = MPoint(m_pts[vertIdx0*3],m_pts[vertIdx0*3 +1], m_pts[vertIdx0*3+2]);
+		MPoint bPos = MPoint(m_pts[vertIdx1*3],m_pts[vertIdx1*3+1], m_pts[vertIdx1*3+2]);
+		MPoint cPos = MPoint(m_pts[vertIdx2*3],m_pts[vertIdx2*3+1], m_pts[vertIdx2*3+2]);
 
 		//P = [p1 - p0 | p2 - p0]
 		
@@ -211,16 +253,25 @@ MStatus customDeformer::deform(MDataBlock& block, MItGeometry& iter, const MMatr
 		// Get minimum principal strain - the most compressed direction
 		// From the 2x2 eigenvalue decomposition of S
 		float trace = s00 + s11;
+
+
 		float det = s00 * s11 - s01 * s10;
+		if (fabs(det) < 1e-6f) continue;
+
 		float disc = sqrt(std::max(0.0f, (trace * trace * 0.25f) - det));
 		float eigenMin = (trace * 0.5f) - disc; // most compressed eigenvalue
 
 		// Compression factor - how much the surface shrank in that direction
 		float compressionFactor = sqrt(std::max(0.0f, eigenMin));
 
+
+
 		float waveLen = 1.0f / wrinkleFreqVal;
 		float physicalAmplitude = 0.0f;
-		if (compressionFactor > 0.0001f && compressionFactor < 1.0f) {
+		if (compressionFactor < 0.0001f || compressionFactor >= 1.0f) {
+			physicalAmplitude = 0.0f;
+		}
+		else {
 			float invC = 1.0f / compressionFactor;
 			physicalAmplitude = (waveLen / (2.0f * M_PI)) *
 				sqrt(std::max(0.0f, invC * invC - 1.0f));
@@ -237,122 +288,172 @@ MStatus customDeformer::deform(MDataBlock& block, MItGeometry& iter, const MMatr
 		// Transform wrinkle direction from UV space to world space using n1, n2
 		MVector n1 = triData.normal[0];
 		MVector n2 = triData.normal[1];
-		MVector wrinkleDirWorld = (n1 * wrinkleX + n2 * wrinkleY).normal();
+		MVector wrinkleDirWorld = (n1 * wrinkleX + n2 * wrinkleY);
+		double dirLen = wrinkleDirWorld.length();
+		if (dirLen < 1e-6) continue;
+		wrinkleDirWorld = wrinkleDirWorld / dirLen;
 
-		if (strainMagnitude >= 0.0f) continue;
+		strainMagnitude *= triData.windingSign;
+
+		//if (strainMagnitude >= 0.0f) continue;
 
 		for (int j = 0; j < 3; ++j) {
 		
 			int vertIdx = triData.vertIdx[j];
-			if (vertIdx > numVerts) continue;
+			if (vertIdx >= numVerts) continue;
 
-			if (threadCount[tid][vertIdx] > 0) {
+			if (m_threadCount[tid][vertIdx] > 0) {
 				// Flip if pointing roughly opposite to what's already accumulated
-				MVector existing = threadWrinkleDir[tid][vertIdx];
+				MVector existing = m_threadWrinkleDir[tid][vertIdx];
 				if ((existing * wrinkleDirWorld) < 0.0f) {
 					wrinkleDirWorld = -wrinkleDirWorld;
 				}
 			}
 
-			threadAccum[tid][vertIdx] += MVector(allNormals[vertIdx]) * strainMagnitude;
-			threadWrinkleDir[tid][vertIdx] += wrinkleDirWorld;
-			threadCount[tid][vertIdx]++;
-			threadPhysAmp[tid][vertIdx] += physicalAmplitude;
+			m_threadAccum[tid][vertIdx] += MVector(m_nrms[vertIdx*3], m_nrms[vertIdx*3+1], m_nrms[vertIdx*3+2]) * strainMagnitude;
+			m_threadWrinkleDir[tid][vertIdx] += wrinkleDirWorld;
+			m_threadCount[tid][vertIdx]++;
+			m_threadPhysAmp[tid][vertIdx] += physicalAmplitude;
 		}
 
 	}
-
-	std::vector<double> wrinklePhase(numVerts, -1.0); // -1 = unvisited
-	std::vector<float> strainMask(numVerts, 0.0f);    // precomputed per vertex
-	std::vector<MVector> vertexDirs(numVerts, MVector(0, 0, 0));
-	std::vector<float> vertexAmps(numVerts, 0.0f);
 	
+	#pragma omp parallel for schedule(static)
 	for (int k = 0; k < numVerts; ++k) {
 		MVector accum(0, 0, 0);
 		MVector dirAccum(0, 0, 0);
 		float physicalAmplitude = 0.0f;
 		int count = 0;
 		for (int t = 0; t < numThreads; ++t) {
-			accum += threadAccum[t][k];
-			count += threadCount[t][k];
-			dirAccum += threadWrinkleDir[t][k];
-			physicalAmplitude += threadPhysAmp[t][k];
+			accum += m_threadAccum[t][k];
+			count += m_threadCount[t][k];
+			dirAccum += m_threadWrinkleDir[t][k];
+			physicalAmplitude += m_threadPhysAmp[t][k];
 		}
 		if (count > 0) {
 			accum /= count;
 			dirAccum = dirAccum.normal();
-			strainMask[k] = accum.length() / count;
-			vertexDirs[k] = dirAccum.normal();
-			vertexAmps[k] = physicalAmplitude / count;
+			m_strainMask[k] = accum.length();
+			m_vertexDirs[k] = dirAccum.normal();
+			m_vertexAmps[k] = physicalAmplitude / count;
 		}
 	}
 
 	/*	BFS Search	*/
 
+	//std::vector<int> currentFrontier;
+	//std::vector<int> nextFrontier;
+	//std::vector<bool> isBoundary(numVerts, false);
+	//std::vector<bool> visited(numVerts, false);
+	//currentFrontier.reserve(numVerts);
+
 	// Seed from vertices with zero strain (boundary of wrinkle region)
-	std::queue<int> frontier;
+	//std::queue<int> frontier;
 	for (int k = 0; k < numVerts; ++k) {
-		if (strainMask[k] < 0.0001f) {
-			wrinklePhase[k] = 0.0;
-			frontier.push(k);
+		if (m_strainMask[k] > 0.0001f) continue;
+		int start = mesh.adjacencyStart[k];
+		int count = mesh.adjacencyCount[k];
+		for (int n = 0; n < count; ++n) {
+			int neighborIdx = mesh.adjacencyData[start + n];
+			if (m_strainMask[neighborIdx] > 0.0001f) {
+				m_isBoundary[k] = true;
+				break; // one compressed neighbor is enough
+			}
+		}
+	}
+
+	std::vector<int> hopsFromBoundary(numVerts, -1);
+// seed
+for (int k = 0; k < numVerts; ++k)
+    if (m_isBoundary[k]) hopsFromBoundary[k] = 0;
+
+// BFS counting hops
+// then print
+int maxHops = 0;
+for (int k = 0; k < numVerts; ++k)
+    if (m_strainMask[k] > 0.0001f && hopsFromBoundary[k] > maxHops)
+        maxHops = hopsFromBoundary[k];
+MGlobal::displayInfo(MString("Max hops into compressed region: ") + maxHops);
+
+	int compressedCount = 0;
+	int boundaryCount = 0;
+	float maxAmp = 0.0f;
+
+	for (int k = 0; k < numVerts; ++k) {
+		if (m_strainMask[k] > 0.0001f) compressedCount++;
+		if (m_vertexAmps[k] > maxAmp) maxAmp = m_vertexAmps[k];
+	}
+	// after BFS
+	for (int k = 0; k < numVerts; ++k) {
+		if (m_isBoundary[k]) boundaryCount++;
+	}
+
+	MGlobal::displayInfo(
+		MString("Compressed: ") + compressedCount +
+		MString(" Boundary: ") + boundaryCount +
+		MString(" MaxAmp: ") + maxAmp
+	);
+
+	for (int k = 0; k < numVerts; ++k) {
+		if (m_isBoundary[k]) {
+			m_wrinklePhase[k] = 0.0;
+			m_currentFrontier.push_back(k);
+			m_visited[k] = true;
 		}
 	}
 
 	// Propagate phase through connectivity
-	while (!frontier.empty()) {
-		int current = frontier.front();
-		frontier.pop();
+	while (!m_currentFrontier.empty()) {
+		m_nextFrontier.clear();
+	
+		for (int current : m_currentFrontier) {
+			MPoint currentPos = MPoint(m_pts[current * 3], m_pts[current * 3 + 1], m_pts[current * 3 + 2]);
+			MVector currentDir = m_vertexDirs[current];
 
-		MPoint currentPos = allPoints[current];
-		MVector currentDir = vertexDirs[current];
+			int start = mesh.adjacencyStart[current];
+			int count = mesh.adjacencyCount[current];
+			for (int n = 0; n < count; ++n) {
+				int neighborIdx = mesh.adjacencyData[start + n];
+				
+				if (m_visited[neighborIdx]) continue;
+				m_visited[neighborIdx] = true;
 
-		for (int neighborIdx : mesh.vertIDConnections[current]) {
-			if (wrinklePhase[neighborIdx] >= 0.0) continue; // already visited
+				MPoint neighborPos = MPoint(m_pts[neighborIdx * 3], m_pts[neighborIdx * 3 + 1], m_pts[neighborIdx * 3 + 2]);
+				MVector edge = MVector(neighborPos - currentPos);
 
-			MPoint neighborPos = allPoints[neighborIdx];
-			MVector edge = MVector(neighborPos - currentPos);
+				MVector dirToUse = (currentDir.length() > 0.0001f) ?
+					currentDir : m_vertexDirs[neighborIdx];
 
-			// Project edge onto wrinkle direction to get phase increment
-			double phaseIncrement = (edge * currentDir) * wrinkleFreqVal;
-			wrinklePhase[neighborIdx] = wrinklePhase[current] + phaseIncrement;
-			frontier.push(neighborIdx);
+				// Project edge onto wrinkle direction to get phase increment
+				double phaseIncrement = (edge * dirToUse) * wrinkleFreqVal;
+				m_wrinklePhase[neighborIdx] = m_wrinklePhase[current] + phaseIncrement;
+				m_nextFrontier.push_back(neighborIdx);
+			}
 		}
+		std::swap(m_currentFrontier, m_nextFrontier);
 	}
 
 	for (int k = 0; k < numVerts; ++k) {
 
-		if (strainMask[k] > 0.0001f) {
-			MVector normal = MVector(allNormals[k]);
-			MPoint pos = allPoints[k];
+		if (m_strainMask[k] > 0.0001f && m_wrinklePhase[k] >= 0.0) {
+			MVector normal = MVector(m_nrms[k*3], m_nrms[k*3+1], m_nrms[k*3+2]);
+			MPoint pos = MPoint(m_pts[k*3], m_pts[k*3 + 1], m_pts[k*3 + 2]);
 			MVector tempPos = MVector(pos.x, pos.y, pos.z);
 
-			double phase = wrinklePhase[k];
+			double phase = m_wrinklePhase[k];
 			double wave = pow(abs(sin(phase)), 0.5) * (sin(phase) > 0 ? 1.0 : -1.0);
 
-			float wrinkleDisp = (float)(wave * vertexAmps[k] * envelope);
-			writePos[k] = allPoints[k] + normal * wrinkleDisp;
+			float wrinkleDisp = (float)(wave * m_vertexAmps[k] * envelope);
+			m_writePos[k] = MPoint(m_pts[k * 3], m_pts[k * 3 + 1], m_pts[k * 3 + 2]) + normal * wrinkleDisp;
 		}
 		else {
-			writePos[k] = allPoints[k];
+			m_writePos[k] = MPoint(m_pts[k * 3], m_pts[k * 3 + 1], m_pts[k * 3 + 2]);
 		}
 	}
 	
-	/*
-	int compressedVerts = 0;
-	float maxDisp = 0.0f;
-	for (int k = 0; k < numVerts; ++k) {
-		MVector d = writePos[k] - allPoints[k];
-		float len = d.length();
-		if (len > 0.0001f) compressedVerts++;
-		if (len > maxDisp) maxDisp = len;
-	}
-	MGlobal::displayInfo(MString("Compressed verts: ") + compressedVerts +
-		MString(" MaxDisp: ") + maxDisp);
-	*/
-
 	iter.reset();
 	for (; !iter.isDone(); iter.next()) {
-		iter.setPosition(writePos[iter.index()]);
+		iter.setPosition(m_writePos[iter.index()]);
 	}
 	return MStatus::kSuccess;
 }

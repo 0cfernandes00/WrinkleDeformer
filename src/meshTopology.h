@@ -25,6 +25,7 @@ struct TriangleData {
 	float qInv[2][2];
 	int vertIdx[3];
 	MVector normal[2];
+	int windingSign;
 };
 
 
@@ -37,10 +38,13 @@ class meshTopology {
 public:
 	meshTopology() {};
 	~meshTopology() {};
-	void buildFromMesh(MObject& mesh);
+	void buildFromMesh(MObject& mesh, int numVerts);
 	std::vector<float> vertstoRestLen;
 	std::map<std::pair<int, int>, float> map_vertsToRL;
-	std::unordered_map<int, std::vector<int>> vertIDConnections;
+	//std::unordered_map<int, std::vector<int>> vertIDConnections;
+	std::vector<int> adjacencyData;    // flat list of all neighbor indices
+	std::vector<int> adjacencyStart;   // adjacencyStart[v] = start index in adjacencyData
+	std::vector<int> adjacencyCount;   // number of neighbors for vertex v
 	std::vector<TriangleData> tritoQInv;
 
 	//const Vertex& getVertex(uint32_t index) const;

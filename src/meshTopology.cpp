@@ -1,22 +1,22 @@
 ﻿#include <meshTopology.h>
 
 
-void meshTopology::buildFromMesh(MObject& mesh) {
+void meshTopology::buildFromMesh(MObject& mesh, int numVerts) {
 
 
 	MStatus status;
 	MItMeshEdge edgeIter(mesh, &status);
 	MItMeshPolygon polyIter(mesh, &status);
+	adjacencyCount.assign(numVerts, 0);
 
-	//std::map<std::pair<MPoint*, MPoint*>, float> vertstoRestLen;
 	for (; !edgeIter.isDone(); edgeIter.next()) {
 		// get vertex indices for the edge
 		int vertId1 = edgeIter.index(0);
 		int vertId2 = edgeIter.index(1);
 
 		// store connectivity for each vertex
-		vertIDConnections[vertId1].push_back(vertId2);
-		vertIDConnections[vertId2].push_back(vertId1);
+		adjacencyCount[vertId1]++;
+		adjacencyCount[vertId2]++;
 
 		MPoint pointId1 = edgeIter.point(0, MSpace::kObject, &status);
 		MPoint pointId2 = edgeIter.point(1, MSpace::kObject, &status);
@@ -26,6 +26,24 @@ void meshTopology::buildFromMesh(MObject& mesh) {
 		std::pair pointPair = std::make_pair(std::min(vertId1, vertId2), std::max(vertId1, vertId2));
 		map_vertsToRL[pointPair] = dist;
 		vertstoRestLen.push_back(dist);
+	}
+	adjacencyStart.resize(numVerts + 1, 0);
+	for (int v = 0; v < numVerts; ++v) {
+		adjacencyStart[v + 1] = adjacencyStart[v] + adjacencyCount[v];
+	}
+
+	// Total neighbors is the last entry
+	int totalNeighbors = adjacencyStart[numVerts];
+	adjacencyData.resize(totalNeighbors);
+
+	std::vector<int> writeCursor = adjacencyStart; // copy start positions
+
+	for (edgeIter.reset(); !edgeIter.isDone(); edgeIter.next()) {
+		int v1 = edgeIter.index(0);
+		int v2 = edgeIter.index(1);
+
+		adjacencyData[writeCursor[v1]++] = v2;
+		adjacencyData[writeCursor[v2]++] = v1;
 	}
 
 	MFnMesh restMesh(mesh);
@@ -97,6 +115,7 @@ void meshTopology::buildFromMesh(MObject& mesh) {
 				float qi11 = q00 * inv_det;
 
 				TriangleData triData;
+				triData.windingSign = (det < 0) ? -1.0f : 1.0f;
 				triData.qInv[0][0] = qi00;
 				triData.qInv[0][1] = qi01;
 				triData.qInv[1][0] = qi10;
@@ -117,11 +136,3 @@ void meshTopology::buildFromMesh(MObject& mesh) {
 
 
 }
-
-/*
-const Vertex& meshTopology::getVertex(uint32_t index) const {
-
-	Vertex vert;
-	return vert;
-}
-*/

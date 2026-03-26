@@ -30,6 +30,29 @@ public:
 	bool mInitialized = false;
 	meshTopology mesh;
 
+	std::vector<std::vector<MVector>> m_threadAccum;
+	std::vector<std::vector<int>> m_threadCount;
+	std::vector<std::vector<MVector>> m_threadWrinkleDir;
+	std::vector<std::vector<float>> m_threadPhysAmp;
+
+	std::vector<double> m_wrinklePhase;
+	std::vector<float> m_strainMask;
+	std::vector<MVector> m_vertexDirs;
+	std::vector<float> m_vertexAmps;
+	std::vector<MPoint> m_writePos;
+	std::vector<float> m_pts;
+	std::vector<float> m_nrms;
+	std::vector<MPoint> m_currentPos;
+
+	std::vector<bool> m_visited;
+	std::vector<bool> m_isBoundary;
+	std::vector<int> m_currentFrontier;
+	std::vector<int> m_nextFrontier;
+
+
+	int m_cachedNumVerts = -1;
+	int m_cachedNumThreads = -1;
+
 };
 
 
