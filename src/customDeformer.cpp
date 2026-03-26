@@ -263,8 +263,10 @@ MStatus customDeformer::deform(MDataBlock& block, MItGeometry& iter, const MMatr
 
 		// Compression factor - how much the surface shrank in that direction
 		float compressionFactor = sqrt(std::max(0.0f, eigenMin));
+		float sMag = 1.0f - compressionFactor;
 
-
+		// Only apply if it's actually compressed
+		strainMagnitude = (sMag > 0.0f) ? sMag : 0.0f;
 
 		float waveLen = 1.0f / wrinkleFreqVal;
 		float physicalAmplitude = 0.0f;
@@ -292,8 +294,9 @@ MStatus customDeformer::deform(MDataBlock& block, MItGeometry& iter, const MMatr
 		double dirLen = wrinkleDirWorld.length();
 		if (dirLen < 1e-6) continue;
 		wrinkleDirWorld = wrinkleDirWorld / dirLen;
+		//wrinkleDirWorld = MVector(1, 0, 0);
 
-		strainMagnitude *= triData.windingSign;
+		//strainMagnitude *= triData.windingSign;
 
 		//if (strainMagnitude >= 0.0f) continue;
 
@@ -334,46 +337,51 @@ MStatus customDeformer::deform(MDataBlock& block, MItGeometry& iter, const MMatr
 			accum /= count;
 			dirAccum = dirAccum.normal();
 			m_strainMask[k] = accum.length();
-			m_vertexDirs[k] = dirAccum.normal();
+			m_vertexDirs[k] = dirAccum;
 			m_vertexAmps[k] = physicalAmplitude / count;
 		}
 	}
 
 	/*	BFS Search	*/
+	// 1. Clear frontiers and reset visited state
+	m_currentFrontier.clear();
+	std::fill(m_visited.begin(), m_visited.end(), false);
+	std::fill(m_isBoundary.begin(), m_isBoundary.end(), false);
 
-	//std::vector<int> currentFrontier;
-	//std::vector<int> nextFrontier;
-	//std::vector<bool> isBoundary(numVerts, false);
-	//std::vector<bool> visited(numVerts, false);
-	//currentFrontier.reserve(numVerts);
-
-	// Seed from vertices with zero strain (boundary of wrinkle region)
-	//std::queue<int> frontier;
+	// 2. Unified Seeding Logic
 	for (int k = 0; k < numVerts; ++k) {
-		if (m_strainMask[k] > 0.0001f) continue;
-		int start = mesh.adjacencyStart[k];
-		int count = mesh.adjacencyCount[k];
-		for (int n = 0; n < count; ++n) {
-			int neighborIdx = mesh.adjacencyData[start + n];
-			if (m_strainMask[neighborIdx] > 0.0001f) {
-				m_isBoundary[k] = true;
-				break; // one compressed neighbor is enough
+		// Look for "uncompressed" vertices (using your threshold, not a hardcoded 0.0001f)
+		if (m_strainMask[k] <= 0.0001f) {
+			int start = mesh.adjacencyStart[k];
+			int count = mesh.adjacencyCount[k];
+
+			for (int n = 0; n < count; ++n) {
+				int neighborIdx = mesh.adjacencyData[start + n];
+
+				// If an uncompressed vertex touches a compressed one, it's a seed!
+				if (m_strainMask[neighborIdx] > 0.0001f) {
+					m_isBoundary[k] = true;
+					m_wrinklePhase[k] = 0.0; // Initialize phase
+					m_currentFrontier.push_back(k);
+					m_visited[k] = true;
+					break;
+				}
 			}
 		}
 	}
 
 	std::vector<int> hopsFromBoundary(numVerts, -1);
-// seed
-for (int k = 0; k < numVerts; ++k)
-    if (m_isBoundary[k]) hopsFromBoundary[k] = 0;
+	// seed
+	for (int k = 0; k < numVerts; ++k)
+		if (m_isBoundary[k]) hopsFromBoundary[k] = 0;
 
-// BFS counting hops
-// then print
-int maxHops = 0;
-for (int k = 0; k < numVerts; ++k)
-    if (m_strainMask[k] > 0.0001f && hopsFromBoundary[k] > maxHops)
-        maxHops = hopsFromBoundary[k];
-MGlobal::displayInfo(MString("Max hops into compressed region: ") + maxHops);
+	// BFS counting hops
+	// then print
+	int maxHops = 0;
+	for (int k = 0; k < numVerts; ++k)
+		if (m_strainMask[k] > 0.0001f && hopsFromBoundary[k] > maxHops)
+			maxHops = hopsFromBoundary[k];
+	MGlobal::displayInfo(MString("Max hops into compressed region: ") + maxHops);
 
 	int compressedCount = 0;
 	int boundaryCount = 0;
@@ -394,14 +402,6 @@ MGlobal::displayInfo(MString("Max hops into compressed region: ") + maxHops);
 		MString(" MaxAmp: ") + maxAmp
 	);
 
-	for (int k = 0; k < numVerts; ++k) {
-		if (m_isBoundary[k]) {
-			m_wrinklePhase[k] = 0.0;
-			m_currentFrontier.push_back(k);
-			m_visited[k] = true;
-		}
-	}
-
 	// Propagate phase through connectivity
 	while (!m_currentFrontier.empty()) {
 		m_nextFrontier.clear();
@@ -421,8 +421,15 @@ MGlobal::displayInfo(MString("Max hops into compressed region: ") + maxHops);
 				MPoint neighborPos = MPoint(m_pts[neighborIdx * 3], m_pts[neighborIdx * 3 + 1], m_pts[neighborIdx * 3 + 2]);
 				MVector edge = MVector(neighborPos - currentPos);
 
-				MVector dirToUse = (currentDir.length() > 0.0001f) ?
-					currentDir : m_vertexDirs[neighborIdx];
+				//MVector tmp = m_vertexDirs[neighborIdx];
+				//tmp = normal * strainMask[k];
+				MVector dirToUse = currentDir;
+				if (dirToUse.length() < 0.001) {
+					dirToUse = MVector(1, 0, 0); // Fallback
+				}
+				//MVector dirToUse = (currentDir.length() > 0.0001f) ?
+					//currentDir : m_vertexDirs[neighborIdx];
+				dirToUse.normalize();
 
 				// Project edge onto wrinkle direction to get phase increment
 				double phaseIncrement = (edge * dirToUse) * wrinkleFreqVal;
@@ -435,16 +442,16 @@ MGlobal::displayInfo(MString("Max hops into compressed region: ") + maxHops);
 
 	for (int k = 0; k < numVerts; ++k) {
 
-		if (m_strainMask[k] > 0.0001f && m_wrinklePhase[k] >= 0.0) {
+		if (m_strainMask[k] > 0.0001f && m_visited[k]) {
 			MVector normal = MVector(m_nrms[k*3], m_nrms[k*3+1], m_nrms[k*3+2]);
 			MPoint pos = MPoint(m_pts[k*3], m_pts[k*3 + 1], m_pts[k*3 + 2]);
-			MVector tempPos = MVector(pos.x, pos.y, pos.z);
+			//MVector tempPos = MVector(pos.x, pos.y, pos.z);
 
 			double phase = m_wrinklePhase[k];
 			double wave = pow(abs(sin(phase)), 0.5) * (sin(phase) > 0 ? 1.0 : -1.0);
 
 			float wrinkleDisp = (float)(wave * m_vertexAmps[k] * envelope);
-			m_writePos[k] = MPoint(m_pts[k * 3], m_pts[k * 3 + 1], m_pts[k * 3 + 2]) + normal * wrinkleDisp;
+			m_writePos[k] = pos + normal * wrinkleDisp;
 		}
 		else {
 			m_writePos[k] = MPoint(m_pts[k * 3], m_pts[k * 3 + 1], m_pts[k * 3 + 2]);
