@@ -12,14 +12,20 @@ Much of the implementation is built on the following SIGGRAPH paper [Strain Base
 
 ## Geodesic Phase Integration and Arc-length conservation
 
-<img src="visuals/before.png" width="400"> <img src="visuals/after.png" width="420"> 
+<img src="visuals/before.png" width="390"> <img src="visuals/after.png" width="420"> 
+
+Breadth-First Search is used to propogate over the edges of the mesh and find where to apply the displacement. 
 
 ## Strain Tensor (Green-St Venant strain)
 
-<img src="visuals/tensionPBD.gif" width="500"> 
+<img src="visuals/tensionPBD.gif" width="400"> 
+
+![Uploading Screenshot 2026-03-03 165035.png…]()
+
+The Strain Tensor is calculated to give mesh independent strain calculation using the UV space. These material coordinates are used in calculating the deformation gradient which is then used to calculate strain. The eigenvalue decomposition provides the strain values and the eigenvalue provides the direction. In this example, I am displacing the mesh along the normal using the tensor.
 
 ## Laplacian smoothing
 
-Tension weighted smoothing moving points towards the average position of its neighbors.
-
 <img src="visuals/tensionwLaplacianSmoothing.gif" width="400"> 
+
+Tension weighted smoothing moving points towards the average position of its neighbors.
