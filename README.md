@@ -12,7 +12,7 @@ Much of the implementation is built on the following SIGGRAPH paper [Strain Base
 
 ## Geodesic Phase Integration and Arc-length conservation
 
-<img src="visuals/before.png" width="500"> <img src="visuals/after.png" width="500"> 
+<img src="visuals/before.png" width="400"> <img src="visuals/after.png" width="420"> 
 
 ## Strain Tensor (Green-St Venant strain)
 
