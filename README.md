@@ -10,15 +10,15 @@ This is a personal project which began in Spring 2026. The intended outcome is t
 
 Much of the implementation is built on the following SIGGRAPH paper [Strain Based Dynamics Paper](https://dl.acm.org/doi/10.5555/2849517.2849542)
 
-# Geodesic Phase Integration and Arc-length conservation
+## Geodesic Phase Integration and Arc-length conservation
 
-<img src="visuals/before" width="500"> <img src="visuals/after" width="500"> 
+<img src="visuals/before.png" width="500"> <img src="visuals/after.png" width="500"> 
 
-# Strain Tensor
+## Strain Tensor (Green-St Venant strain)
 
 <img src="visuals/tensionPBD.gif" width="500"> 
 
-# Laplacian smoothing
+## Laplacian smoothing
 
 Tension weighted smoothing moving points towards the average position of its neighbors.
 
