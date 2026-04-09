@@ -225,6 +225,11 @@ MStatus customDeformer::deform(MDataBlock& block, MItGeometry& iter, const MMatr
 		float f20 = p20 * q00 + p21 * q10;
 		float f21 = p20 * q01 + p21 * q11;
 
+		MVector f1 = MVector(f00, f10, f20);
+		MVector f2 = MVector(f01, f11, f21);
+		float f1Len = f1.length();
+		float f2Len = f2.length();
+
 		// [ f00  f01			
 		//   f10  f11   => F^T => [ f00  f10  f20
 		//   f20  f21]				f01  f11  f21]	
@@ -244,18 +249,21 @@ MStatus customDeformer::deform(MDataBlock& block, MItGeometry& iter, const MMatr
 		float s10 = t10 * f00 + t11 * f10 + t12 * f20;
 		float s11 = t10 * f01 + t11 * f11 + t12 * f21;
 
+
+		float s01_decoupled = (f1Len * f2Len > 1e-6f) ? s01 / (f1Len * f2Len) : 0.f;
+
 		//(S₁₁ - 1, S₂₂ - 1, S₁₂) as wrinkle magnitude / direction mask
 		// (S00 -1, S11 - 1, S01)
 		float strainMagnitude = (s00 - 1.0f) + (s11 - 1.0f);
 		// Principal direction via simple 2x2 eigenvector
-		float angle = 0.5f * atan2(2.0f * s01, s00 - s11);
+		float angle = 0.5f * atan2(2.0f * s01_decoupled, s00 - s11);
 
 		// Get minimum principal strain - the most compressed direction
 		// From the 2x2 eigenvalue decomposition of S
 		float trace = s00 + s11;
 
 
-		float det = s00 * s11 - s01 * s10;
+		float det = s00 * s11 - s01_decoupled * s01_decoupled;
 		if (fabs(det) < 1e-6f) continue;
 
 		float disc = sqrt(std::max(0.0f, (trace * trace * 0.25f) - det));
