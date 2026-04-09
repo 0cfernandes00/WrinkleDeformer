@@ -27,6 +27,8 @@ public:
 	static MObject wrinkleFreqVal;
 	static MObject wrinkleAmpVal;
 	static MObject compressionThreshold;
+	static MObject warpStiffness;
+	static MObject weftStiffness;
 	bool mInitialized = false;
 	meshTopology mesh;
 

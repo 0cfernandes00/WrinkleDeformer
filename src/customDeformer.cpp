@@ -15,8 +15,8 @@ MObject customDeformer::smoothAlpha;
 MObject customDeformer::wrinkleFreqVal;
 MObject customDeformer::wrinkleAmpVal;
 MObject customDeformer::compressionThreshold;
-
-
+MObject customDeformer::warpStiffness;
+MObject customDeformer::weftStiffness;
 
 void* customDeformer::creator() 
 {
@@ -64,12 +64,24 @@ MStatus customDeformer::initialize()
 	nAttr.setKeyable(true);
 	addAttribute(compressionThreshold);
 
+	warpStiffness = nAttr.create("warpStiffness", "warpStiffness", MFnNumericData::kFloat, 1.0f);
+	nAttr.setStorable(true);
+	nAttr.setKeyable(true);
+	addAttribute(warpStiffness);
+
+	weftStiffness = nAttr.create("weftStiffness", "weftStiffness", MFnNumericData::kFloat, 1.0f);
+	nAttr.setStorable(true);
+	nAttr.setKeyable(true);
+	addAttribute(weftStiffness);
+
 	
 	attributeAffects(customDeformer::iterations, customDeformer::outputGeom);
 	attributeAffects(customDeformer::smoothAlpha, customDeformer::outputGeom);
 	attributeAffects(customDeformer::wrinkleFreqVal, customDeformer::outputGeom);
 	attributeAffects(customDeformer::wrinkleAmpVal, customDeformer::outputGeom);
 	attributeAffects(customDeformer::compressionThreshold, customDeformer::outputGeom);
+	attributeAffects(customDeformer::warpStiffness, customDeformer::outputGeom);
+	attributeAffects(customDeformer::weftStiffness, customDeformer::outputGeom);
 
 	attributeAffects(customDeformer::locatorMatrix, customDeformer::outputGeom);
 	
@@ -88,6 +100,8 @@ MStatus customDeformer::deform(MDataBlock& block, MItGeometry& iter, const MMatr
 	float wrinkleFreqVal = block.inputValue(customDeformer::wrinkleFreqVal, &returnStatus).asFloat();
 	float wrinkleAmpVal = block.inputValue(customDeformer::wrinkleAmpVal, &returnStatus).asFloat();
 	float compressionThreshold = block.inputValue(customDeformer::compressionThreshold, &returnStatus).asFloat();
+	float warpStiffness = block.inputValue(customDeformer::warpStiffness, &returnStatus).asFloat();
+	float weftStiffness = block.inputValue(customDeformer::weftStiffness, &returnStatus).asFloat();
 
 	int numVerts = iter.count();
 
