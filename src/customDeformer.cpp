@@ -265,10 +265,25 @@ MStatus customDeformer::deform(MDataBlock& block, MItGeometry& iter, const MMatr
 
 
 		float s01_decoupled = (f1Len * f2Len > 1e-6f) ? s01 / (f1Len * f2Len) : 0.f;
+		float s00_decoupled = (f1Len > 1e-6f) ? s00 / (f1Len * f1Len) : 0.f;
+		float s11_decoupled = (f2Len > 1e-6f) ? s11 / (f2Len * f2Len) : 0.f;
+
+		/*
+		( √S11 −1, √S22 −1, and S12/|fi || fj | ) as wrinkle magnitude/direction mask. 
+			- The first two components indicate how much the surface is stretched or compressed along the principal directions (with negative values indicating compression). 
+			- The third component(S12 normalized by the lengths of f1 and f2) indicates shear, which can influence wrinkle direction.
+		*/
+
 
 		//(S₁₁ - 1, S₂₂ - 1, S₁₂) as wrinkle magnitude / direction mask
 		// (S00 -1, S11 - 1, S01)
-		float strainMagnitude = (s00 - 1.0f) + (s11 - 1.0f);
+		float warpStrain = s00 - 1.0;
+		float weftStrain = s11 - 1.0;
+		//float strainMagnitude = (s00 - 1.0f) + (s11 - 1.0f);
+		float strainMagnitude = warpStrain * warpStiffness + weftStrain * weftStiffness;
+
+
+	
 		// Principal direction via simple 2x2 eigenvector
 		float angle = 0.5f * atan2(2.0f * s01_decoupled, s00 - s11);
 
@@ -277,7 +292,7 @@ MStatus customDeformer::deform(MDataBlock& block, MItGeometry& iter, const MMatr
 		float trace = s00 + s11;
 
 
-		float det = s00 * s11 - s01_decoupled * s01_decoupled;
+		float det = s00 * s11 - s01_decoupled * s10;
 		if (fabs(det) < 1e-6f) continue;
 
 		float disc = sqrt(std::max(0.0f, (trace * trace * 0.25f) - det));
@@ -288,7 +303,7 @@ MStatus customDeformer::deform(MDataBlock& block, MItGeometry& iter, const MMatr
 		float sMag = 1.0f - compressionFactor;
 
 		// Only apply if it's actually compressed
-		strainMagnitude = (sMag > 0.0f) ? sMag : 0.0f;
+		//strainMagnitude = (sMag > 0.0f) ? sMag : 0.0f;
 
 		float waveLen = 1.0f / wrinkleFreqVal;
 		float physicalAmplitude = 0.0f;
