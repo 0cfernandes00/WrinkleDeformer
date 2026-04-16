@@ -17,6 +17,7 @@ MObject customDeformer::wrinkleAmpVal;
 MObject customDeformer::compressionThreshold;
 MObject customDeformer::warpStiffness;
 MObject customDeformer::weftStiffness;
+MObject customDeformer::areaStiffness;
 
 void* customDeformer::creator() 
 {
@@ -74,6 +75,10 @@ MStatus customDeformer::initialize()
 	nAttr.setKeyable(true);
 	addAttribute(weftStiffness);
 
+	areaStiffness = nAttr.create("areaStiffness", "areaStiffness", MFnNumericData::kFloat, 0.5f);
+	nAttr.setStorable(true);
+	nAttr.setKeyable(true);
+	addAttribute(areaStiffness);
 	
 	attributeAffects(customDeformer::iterations, customDeformer::outputGeom);
 	attributeAffects(customDeformer::smoothAlpha, customDeformer::outputGeom);
@@ -82,6 +87,7 @@ MStatus customDeformer::initialize()
 	attributeAffects(customDeformer::compressionThreshold, customDeformer::outputGeom);
 	attributeAffects(customDeformer::warpStiffness, customDeformer::outputGeom);
 	attributeAffects(customDeformer::weftStiffness, customDeformer::outputGeom);
+	attributeAffects(customDeformer::areaStiffness, customDeformer::outputGeom);
 
 	attributeAffects(customDeformer::locatorMatrix, customDeformer::outputGeom);
 	
@@ -102,6 +108,7 @@ MStatus customDeformer::deform(MDataBlock& block, MItGeometry& iter, const MMatr
 	float compressionThreshold = block.inputValue(customDeformer::compressionThreshold, &returnStatus).asFloat();
 	float warpStiffness = block.inputValue(customDeformer::warpStiffness, &returnStatus).asFloat();
 	float weftStiffness = block.inputValue(customDeformer::weftStiffness, &returnStatus).asFloat();
+	float areaStiffness = block.inputValue(customDeformer::areaStiffness, &returnStatus).asFloat();
 
 	int numVerts = iter.count();
 
@@ -117,17 +124,6 @@ MStatus customDeformer::deform(MDataBlock& block, MItGeometry& iter, const MMatr
 		mesh.buildFromMesh(currentInputMesh, numVerts);
 		mInitialized = true;
 	}
-
-	//std::vector<MPoint> currentPos(numVerts);
-	//std::vector<MVector> currentNormals(numVerts);
-	/*
-	for (iter.reset(); !iter.isDone(); iter.next()) {
-		int idx = iter.index();
-		//currentPos[idx] = iter.position();
-		currentNormals[idx] = iter.normal();
-	}
-	*/
-
 
 	/*
 	  - Compute F = P * Q⁻¹  (deformation gradient); P  = [p1-p0 | p2-p0]
@@ -151,11 +147,13 @@ MStatus customDeformer::deform(MDataBlock& block, MItGeometry& iter, const MMatr
 		m_threadCount.assign(numThreads, std::vector<int>(numVerts, 0));
 		m_threadWrinkleDir.assign(numThreads, std::vector<MVector>(numVerts));
 		m_threadPhysAmp.assign(numThreads, std::vector<float>(numVerts, 0.0f));
+		m_threadAreaAccum.assign(numThreads, std::vector<MVector>(numVerts));
 
 		m_wrinklePhase.assign(numVerts, -1.0);
 		m_strainMask.assign(numVerts, 0.0f);
 		m_vertexDirs.assign(numVerts, MVector(0, 0, 0));
 		m_vertexAmps.assign(numVerts, 0.0f);
+		m_vertexAreaDelta.assign(numVerts, MVector(0, 0, 0));
 
 		m_cachedNumVerts = numVerts;
 		m_cachedNumThreads = numThreads;
@@ -176,6 +174,7 @@ MStatus customDeformer::deform(MDataBlock& block, MItGeometry& iter, const MMatr
 		std::fill(m_threadCount[t].begin(), m_threadCount[t].end(), 0);
 		std::fill(m_threadWrinkleDir[t].begin(), m_threadWrinkleDir[t].end(), MVector(0, 0, 0));
 		std::fill(m_threadPhysAmp[t].begin(), m_threadPhysAmp[t].end(), 0.0f);
+		std::fill(m_threadAreaAccum[t].begin(), m_threadAreaAccum[t].end(), MVector(0, 0, 0));
 	}
 
 	std::fill(m_wrinklePhase.begin(), m_wrinklePhase.end(), -1.0);
@@ -184,6 +183,7 @@ MStatus customDeformer::deform(MDataBlock& block, MItGeometry& iter, const MMatr
 	std::fill(m_vertexAmps.begin(), m_vertexAmps.end(), 0.0f);
 	std::fill(m_visited.begin(), m_visited.end(), false);
 	std::fill(m_isBoundary.begin(), m_isBoundary.end(), false);
+	std::fill(m_vertexAreaDelta.begin(), m_vertexAreaDelta.end(), MVector(0, 0, 0));
 	m_currentFrontier.clear();
 	m_nextFrontier.clear();
 
@@ -275,13 +275,43 @@ MStatus customDeformer::deform(MDataBlock& block, MItGeometry& iter, const MMatr
 		*/
 
 
-		//(S₁₁ - 1, S₂₂ - 1, S₁₂) as wrinkle magnitude / direction mask
-		// (S00 -1, S11 - 1, S01)
+		// (S00 -1, S11 - 1, S01) as wrinkle magnitude / direction mask
 		float warpStrain = s00 - 1.0;
 		float weftStrain = s11 - 1.0;
 		//float strainMagnitude = (s00 - 1.0f) + (s11 - 1.0f);
 		float strainMagnitude = warpStrain * warpStiffness + weftStrain * weftStiffness;
 
+		MVector e1 = MVector(p00, p10, p20);  // first column of P = p1-p0
+		MVector e2 = MVector(p01, p11, p21);  // second column of P = p2-p0
+		MVector q1 = MVector(q00, q10);  // first column of Q^-1
+		MVector q2 = MVector(q01, q11);  // second column of Q^-1
+
+		MVector cross_p = e1 ^ e2;
+		MVector cross_q = q1 ^ q2;
+		float C_area = cross_p.length() * cross_p.length() - triData.restCrossSqLen; // area change, positive for expansion, negative for compression
+
+		if (C_area < 0.0) {
+
+			// Compute gradients 
+			MVector grad1 = 2.0f * (e2 ^ cross_p);   // 2*p2 × (p1×p2)
+			MVector grad2 = 2.0f * (e1 ^ (e2 ^ e1)); // 2*p1 × (p2×p1)  -- note operand order
+			MVector grad0 = -(grad1 + grad2);
+
+			// Scale factor lambda 
+			float denominator = (grad0.length() * grad0.length() + grad1.length() * grad1.length() + grad2.length() * grad2.length());
+			if (denominator < 1e-8f) continue;
+			float lambda = C_area / denominator;
+
+			// Per vertex displacement contribution
+			MVector deltaP0 = -lambda * grad0;
+			MVector deltaP1 = -lambda * grad1;
+			MVector deltaP2 = -lambda * grad2;
+
+			m_threadAreaAccum[tid][vertIdx0] += deltaP0 * areaStiffness;
+			m_threadAreaAccum[tid][vertIdx1] += deltaP1 * areaStiffness;
+			m_threadAreaAccum[tid][vertIdx2] += deltaP2 * areaStiffness;
+
+		}
 
 	
 		// Principal direction via simple 2x2 eigenvector
@@ -331,11 +361,6 @@ MStatus customDeformer::deform(MDataBlock& block, MItGeometry& iter, const MMatr
 		double dirLen = wrinkleDirWorld.length();
 		if (dirLen < 1e-6) continue;
 		wrinkleDirWorld = wrinkleDirWorld / dirLen;
-		//wrinkleDirWorld = MVector(1, 0, 0);
-
-		//strainMagnitude *= triData.windingSign;
-
-		//if (strainMagnitude >= 0.0f) continue;
 
 		for (int j = 0; j < 3; ++j) {
 		
@@ -362,6 +387,7 @@ MStatus customDeformer::deform(MDataBlock& block, MItGeometry& iter, const MMatr
 	for (int k = 0; k < numVerts; ++k) {
 		MVector accum(0, 0, 0);
 		MVector dirAccum(0, 0, 0);
+		MVector areaAccum(0, 0, 0);
 		float physicalAmplitude = 0.0f;
 		int count = 0;
 		for (int t = 0; t < numThreads; ++t) {
@@ -369,13 +395,17 @@ MStatus customDeformer::deform(MDataBlock& block, MItGeometry& iter, const MMatr
 			count += m_threadCount[t][k];
 			dirAccum += m_threadWrinkleDir[t][k];
 			physicalAmplitude += m_threadPhysAmp[t][k];
+			areaAccum += m_threadAreaAccum[t][k];
 		}
 		if (count > 0) {
 			accum /= count;
+			areaAccum /= count;
 			dirAccum = dirAccum.normal();
 			m_strainMask[k] = accum.length();
 			m_vertexDirs[k] = dirAccum;
 			m_vertexAmps[k] = physicalAmplitude / count;
+			m_vertexAreaDelta[k] = areaAccum;
+
 		}
 	}
 
@@ -458,14 +488,11 @@ MStatus customDeformer::deform(MDataBlock& block, MItGeometry& iter, const MMatr
 				MPoint neighborPos = MPoint(m_pts[neighborIdx * 3], m_pts[neighborIdx * 3 + 1], m_pts[neighborIdx * 3 + 2]);
 				MVector edge = MVector(neighborPos - currentPos);
 
-				//MVector tmp = m_vertexDirs[neighborIdx];
-				//tmp = normal * strainMask[k];
+
 				MVector dirToUse = currentDir;
 				if (dirToUse.length() < 0.001) {
 					dirToUse = MVector(1, 0, 0); // Fallback
 				}
-				//MVector dirToUse = (currentDir.length() > 0.0001f) ?
-					//currentDir : m_vertexDirs[neighborIdx];
 				dirToUse.normalize();
 
 				// Project edge onto wrinkle direction to get phase increment
@@ -482,7 +509,7 @@ MStatus customDeformer::deform(MDataBlock& block, MItGeometry& iter, const MMatr
 		if (m_strainMask[k] > 0.0001f && m_visited[k]) {
 			MVector normal = MVector(m_nrms[k*3], m_nrms[k*3+1], m_nrms[k*3+2]);
 			MPoint pos = MPoint(m_pts[k*3], m_pts[k*3 + 1], m_pts[k*3 + 2]);
-			//MVector tempPos = MVector(pos.x, pos.y, pos.z);
+			pos += m_vertexAreaDelta[k];
 
 			double phase = m_wrinklePhase[k];
 			double wave = pow(abs(sin(phase)), 0.5) * (sin(phase) > 0 ? 1.0 : -1.0);

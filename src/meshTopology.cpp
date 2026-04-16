@@ -105,7 +105,7 @@ void meshTopology::buildFromMesh(MObject& mesh, int numVerts) {
 				float q10 = n2 * e1_world;
 				float q11 = n2 * e2_world;
 
-				det = q00 * q11 - q01 * q10;
+				det = q00 * q11 - q01 * q10; 
 				inv_det = 1.0f / det;
 
 				// Q⁻¹ = (1/det) * [[ q11, -q01], [-q10,  q00]]
@@ -115,11 +115,13 @@ void meshTopology::buildFromMesh(MObject& mesh, int numVerts) {
 				float qi11 = q00 * inv_det;
 
 				TriangleData triData;
+				triData.restCrossSqLen = (e1_world ^ e2_world).length() * (e1_world ^ e2_world).length();
 				triData.windingSign = (det < 0) ? -1.0f : 1.0f;
 				triData.qInv[0][0] = qi00;
 				triData.qInv[0][1] = qi01;
 				triData.qInv[1][0] = qi10;
 				triData.qInv[1][1] = qi11;
+				triData.detQ = det;
 				triData.vertIdx[0] = v0_idx;
 				triData.vertIdx[1] = v1_idx;
 				triData.vertIdx[2] = v2_idx;

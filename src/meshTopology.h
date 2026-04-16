@@ -23,6 +23,8 @@ struct Vertex {
 struct TriangleData {
 
 	float qInv[2][2];
+	float detQ;
+	float restCrossSqLen;
 	int vertIdx[3];
 	MVector normal[2];
 	int windingSign;

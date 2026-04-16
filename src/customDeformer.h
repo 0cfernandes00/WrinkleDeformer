@@ -29,6 +29,7 @@ public:
 	static MObject compressionThreshold;
 	static MObject warpStiffness;
 	static MObject weftStiffness;
+	static MObject areaStiffness;
 	bool mInitialized = false;
 	meshTopology mesh;
 
@@ -36,6 +37,7 @@ public:
 	std::vector<std::vector<int>> m_threadCount;
 	std::vector<std::vector<MVector>> m_threadWrinkleDir;
 	std::vector<std::vector<float>> m_threadPhysAmp;
+	std::vector<std::vector<MVector>> m_threadAreaAccum; 
 
 	std::vector<double> m_wrinklePhase;
 	std::vector<float> m_strainMask;
@@ -45,6 +47,7 @@ public:
 	std::vector<float> m_pts;
 	std::vector<float> m_nrms;
 	std::vector<MPoint> m_currentPos;
+	std::vector<MVector> m_vertexAreaDelta;
 
 	std::vector<bool> m_visited;
 	std::vector<bool> m_isBoundary;
