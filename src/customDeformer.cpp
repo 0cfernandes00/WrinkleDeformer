@@ -524,7 +524,15 @@ MStatus customDeformer::deform(MDataBlock& block, MItGeometry& iter, const MMatr
 	
 	iter.reset();
 	for (; !iter.isDone(); iter.next()) {
-		iter.setPosition(m_writePos[iter.index()]);
+		float w = weightValue(block, multiIndex, iter.index());
+
+		int index = iter.index();
+		MPoint origPos(m_pts[index * 3], m_pts[index * 3 + 1], m_pts[index * 3 + 2]);
+
+		MPoint defPos = m_writePos[index];
+		MVector delta = defPos - origPos;
+
+		iter.setPosition(origPos + (delta * w));
 	}
 	return MStatus::kSuccess;
 }

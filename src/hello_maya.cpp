@@ -80,6 +80,8 @@ EXPORT MStatus initializePlugin(MObject obj)
 	status = plugin.registerNode("customDeformer", customDeformer::id, customDeformer::creator, customDeformer::initialize, MPxNode::kDeformerNode);
 	if (!status)
 		status.perror("register customDeformer node failed");
+
+	MGlobal::executeCommand("makePaintable -attrType multiFloat -sm deformer customDeformer weights");
 	return status;
 
 }
