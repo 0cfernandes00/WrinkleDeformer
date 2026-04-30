@@ -81,7 +81,18 @@ EXPORT MStatus initializePlugin(MObject obj)
 	if (!status)
 		status.perror("register customDeformer node failed");
 
+
 	MGlobal::executeCommand("makePaintable -attrType multiFloat -sm deformer customDeformer weights");
+
+	MString nodeClassName("wrinkleGPUDeformer");
+	MGPUDeformerRegistry::registerGPUDeformerCreator(
+		"customDeformer",          // The CPU node string name
+		"wrinkleGPUOverride",      // A unique ID for the GPU registrant
+		wrinkleGPUDeformer::getGPUDeformerInfo()
+	);
+
+	customDeformer::pluginPath = plugin.loadPath();
+
 	return status;
 
 }
