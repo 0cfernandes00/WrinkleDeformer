@@ -30,6 +30,7 @@ public:
 	static MObject warpStiffness;
 	static MObject weftStiffness;
 	static MObject areaStiffness;
+	static MObject restMesh;
 	bool mInitialized = false;
 	meshTopology mesh;
 

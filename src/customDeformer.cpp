@@ -6,7 +6,7 @@
 #include <maya/MFnMatrixData.h>
 #include <maya/MFnMatrixAttribute.h>
 #include <maya/MFnNumericAttribute.h>
-
+#include <maya/MFnTypedAttribute.h>
 
 MTypeId customDeformer::id(0x8000f);
 MObject customDeformer::locatorMatrix;
@@ -18,6 +18,7 @@ MObject customDeformer::compressionThreshold;
 MObject customDeformer::warpStiffness;
 MObject customDeformer::weftStiffness;
 MObject customDeformer::areaStiffness;
+MObject customDeformer::restMesh;
 
 void* customDeformer::creator() 
 {
@@ -29,6 +30,7 @@ MStatus customDeformer::initialize()
 	// define attrs
 	MFnMatrixAttribute mAttr;
 	MFnNumericAttribute nAttr;
+	MFnTypedAttribute tAttr;
 
 	locatorMatrix = mAttr.create("locatorMatrix", "lm");
 	mAttr.setStorable(false);
@@ -79,6 +81,11 @@ MStatus customDeformer::initialize()
 	nAttr.setStorable(true);
 	nAttr.setKeyable(true);
 	addAttribute(areaStiffness);
+
+	restMesh = tAttr.create("restMesh", "rm", MFnData::kMesh);
+	tAttr.setStorable(true);
+	tAttr.setConnectable(true);
+	addAttribute(restMesh);
 	
 	attributeAffects(customDeformer::iterations, customDeformer::outputGeom);
 	attributeAffects(customDeformer::smoothAlpha, customDeformer::outputGeom);
@@ -88,6 +95,7 @@ MStatus customDeformer::initialize()
 	attributeAffects(customDeformer::warpStiffness, customDeformer::outputGeom);
 	attributeAffects(customDeformer::weftStiffness, customDeformer::outputGeom);
 	attributeAffects(customDeformer::areaStiffness, customDeformer::outputGeom);
+	attributeAffects(customDeformer::restMesh, customDeformer::outputGeom);
 
 	attributeAffects(customDeformer::locatorMatrix, customDeformer::outputGeom);
 	
@@ -121,8 +129,23 @@ MStatus customDeformer::deform(MDataBlock& block, MItGeometry& iter, const MMatr
 
 
 	if (!mInitialized) {
-		mesh.buildFromMesh(currentInputMesh, numVerts);
-		mInitialized = true;
+
+		// Try to get the explicit rest mesh first
+		MDataHandle restMeshHandle = block.inputValue(customDeformer::restMesh, &returnStatus);
+		MObject restMeshObj = restMeshHandle.asMesh();
+
+		if (!restMeshObj.isNull()) {
+			// Build from the T-pose/A-pose undeformed mesh
+			mesh.buildFromMesh(restMeshObj, numVerts);
+			mInitialized = true;
+		}
+		else {
+			// Fallback (Will still break on reload if deformed, prevents crashing)
+			MGlobal::displayWarning("customDeformer: No restMesh connected! Using current input mesh as rest state.");
+			mesh.buildFromMesh(currentInputMesh, numVerts);
+			mInitialized = true;
+		}
+
 	}
 
 	/*
