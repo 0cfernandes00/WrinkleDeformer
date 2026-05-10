@@ -7,6 +7,9 @@
 #include <maya/MFnMatrixAttribute.h>
 #include <maya/MFnNumericAttribute.h>
 #include <maya/MFnTypedAttribute.h>
+#include <maya/MOpenCLInfo.h>
+#include <maya/MItDependencyGraph.h>
+
 
 MTypeId customDeformer::id(0x8000f);
 MObject customDeformer::locatorMatrix;
@@ -19,6 +22,18 @@ MObject customDeformer::warpStiffness;
 MObject customDeformer::weftStiffness;
 MObject customDeformer::areaStiffness;
 MObject customDeformer::restMesh;
+MString customDeformer::pluginPath = MString("C:/Users/0cfer/Documents/upenn/cs6600/HW1/HW1");
+
+std::vector<float> customDeformer::s_phase;
+std::vector<float> customDeformer::s_strainMask;
+std::vector<float> customDeformer::s_vertexAmps;
+std::vector<float> customDeformer::s_normals;
+
+inline float smoothstep(float edge0, float edge1, float x) {
+	float t = std::max(0.0f, std::min(1.0f, (x - edge0) / (edge1 - edge0)));
+	return t * t * (3.0f - 2.0f * t);
+}
+
 
 void* customDeformer::creator() 
 {
@@ -134,8 +149,10 @@ MStatus customDeformer::deform(MDataBlock& block, MItGeometry& iter, const MMatr
 		MDataHandle restMeshHandle = block.inputValue(customDeformer::restMesh, &returnStatus);
 		MObject restMeshObj = restMeshHandle.asMesh();
 
+
 		if (!restMeshObj.isNull()) {
 			// Build from the T-pose/A-pose undeformed mesh
+
 			mesh.buildFromMesh(restMeshObj, numVerts);
 			mInitialized = true;
 		}
@@ -200,7 +217,7 @@ MStatus customDeformer::deform(MDataBlock& block, MItGeometry& iter, const MMatr
 		std::fill(m_threadAreaAccum[t].begin(), m_threadAreaAccum[t].end(), MVector(0, 0, 0));
 	}
 
-	std::fill(m_wrinklePhase.begin(), m_wrinklePhase.end(), -1.0);
+	//std::fill(m_wrinklePhase.begin(), m_wrinklePhase.end(), -1.0);
 	std::fill(m_strainMask.begin(), m_strainMask.end(), 0.0f);
 	std::fill(m_vertexDirs.begin(), m_vertexDirs.end(), MVector(0, 0, 0));
 	std::fill(m_vertexAmps.begin(), m_vertexAmps.end(), 0.0f);
@@ -431,6 +448,24 @@ MStatus customDeformer::deform(MDataBlock& block, MItGeometry& iter, const MMatr
 
 		}
 	}
+	/*
+	// 1. Spatial Blur of the Strain Mask
+	std::vector<float> smoothedStrain = m_strainMask;
+	for (int k = 0; k < numVerts; ++k) {
+		int start = mesh.adjacencyStart[k];
+		int count = mesh.adjacencyCount[k];
+
+		float sum = m_strainMask[k];
+		for (int n = 0; n < count; ++n) {
+			sum += m_strainMask[mesh.adjacencyData[start + n]];
+		}
+		// Average it out (current vertex + neighbors)
+		smoothedStrain[k] = sum / (count + 1);
+	}
+	// Replace the raw mask with the blurred mask
+	m_strainMask = smoothedStrain;
+	*/
+
 
 	/*	BFS Search	*/
 	// 1. Clear frontiers and reset visited state
@@ -527,6 +562,30 @@ MStatus customDeformer::deform(MDataBlock& block, MItGeometry& iter, const MMatr
 		std::swap(m_currentFrontier, m_nextFrontier);
 	}
 
+	/*
+	for (int k = 0; k < numVerts; ++k) {
+		// Calculate a smooth fade based on your threshold.
+		// Starts fading in at 0.0001f, fully active at 0.001f
+		float fade = smoothstep(0.0001f, 0.001f, m_strainMask[k]);
+
+		if (fade > 0.0f && m_visited[k]) {
+			MVector normal = MVector(m_nrms[k * 3], m_nrms[k * 3 + 1], m_nrms[k * 3 + 2]);
+			MPoint pos = MPoint(m_pts[k * 3], m_pts[k * 3 + 1], m_pts[k * 3 + 2]);
+			pos += m_vertexAreaDelta[k];
+
+			double phase = m_wrinklePhase[k];
+			double wave = pow(abs(sin(phase)), 0.5);
+
+			// Multiply the displacement by the fade factor
+			float wrinkleDisp = (float)(wave * m_vertexAmps[k] * envelope * fade);
+			m_writePos[k] = pos + normal * wrinkleDisp;
+		}
+		else {
+			m_writePos[k] = MPoint(m_pts[k * 3], m_pts[k * 3 + 1], m_pts[k * 3 + 2]);
+		}
+	}
+	*/
+	
 	for (int k = 0; k < numVerts; ++k) {
 
 		if (m_strainMask[k] > 0.0001f && m_visited[k]) {
@@ -536,6 +595,7 @@ MStatus customDeformer::deform(MDataBlock& block, MItGeometry& iter, const MMatr
 
 			double phase = m_wrinklePhase[k];
 			double wave = pow(abs(sin(phase)), 0.5) * (sin(phase) > 0 ? 1.0 : -1.0);
+			//double wave = pow(abs(sin(phase)), 0.5);
 
 			float wrinkleDisp = (float)(wave * m_vertexAmps[k] * envelope);
 			m_writePos[k] = pos + normal * wrinkleDisp;
@@ -557,5 +617,368 @@ MStatus customDeformer::deform(MDataBlock& block, MItGeometry& iter, const MMatr
 
 		iter.setPosition(origPos + (delta * w));
 	}
+
+	// Populate GPU bridge data
+
+	// Topology (once)
+	if (!customDeformer::s_topologyReady) {
+		int nt = (int)mesh.tritoQInv.size();
+		customDeformer::s_hostQInv.resize(nt * 4);
+		customDeformer::s_hostNormals.resize(nt * 6);
+		customDeformer::s_hostVertIdx.resize(nt * 3);
+		customDeformer::s_hostRestCross.resize(nt);
+		for (int i = 0; i < nt; i++) {
+			const TriangleData& t = mesh.tritoQInv[i];
+			customDeformer::s_hostQInv[i * 4 + 0] = t.qInv[0][0];
+			customDeformer::s_hostQInv[i * 4 + 1] = t.qInv[0][1];
+			customDeformer::s_hostQInv[i * 4 + 2] = t.qInv[1][0];
+			customDeformer::s_hostQInv[i * 4 + 3] = t.qInv[1][1];
+			customDeformer::s_hostNormals[i * 6 + 0] = (float)t.normal[0].x;
+			customDeformer::s_hostNormals[i * 6 + 1] = (float)t.normal[0].y;
+			customDeformer::s_hostNormals[i * 6 + 2] = (float)t.normal[0].z;
+			customDeformer::s_hostNormals[i * 6 + 3] = (float)t.normal[1].x;
+			customDeformer::s_hostNormals[i * 6 + 4] = (float)t.normal[1].y;
+			customDeformer::s_hostNormals[i * 6 + 5] = (float)t.normal[1].z;
+			customDeformer::s_hostVertIdx[i * 3 + 0] = t.vertIdx[0];
+			customDeformer::s_hostVertIdx[i * 3 + 1] = t.vertIdx[1];
+			customDeformer::s_hostVertIdx[i * 3 + 2] = t.vertIdx[2];
+			customDeformer::s_hostRestCross[i] = t.restCrossSqLen;
+		}
+		customDeformer::s_topologyReady = true;
+	}
+
+	// Per-frame BFS results
+	customDeformer::s_phase.resize(numVerts);
+	customDeformer::s_strainMask.resize(numVerts);
+	customDeformer::s_vertexAmps.resize(numVerts);
+	customDeformer::s_normals.resize(numVerts * 3);
+	for (int k = 0; k < numVerts; k++) {
+		customDeformer::s_phase[k] = (float)m_wrinklePhase[k];
+		customDeformer::s_strainMask[k] = m_strainMask[k];
+		customDeformer::s_vertexAmps[k] = m_vertexAmps[k];
+		customDeformer::s_normals[k * 3 + 0] = m_nrms[k * 3];
+		customDeformer::s_normals[k * 3 + 1] = m_nrms[k * 3 + 1];
+		customDeformer::s_normals[k * 3 + 2] = m_nrms[k * 3 + 2];
+	}
+
 	return MStatus::kSuccess;
+}
+
+
+
+// Static topology arrays — populated by customDeformer::deform(), read here.
+// Declared as statics so wrinkleGPUDeformer can access them without a node ptr.
+std::vector<float> customDeformer::s_hostQInv;
+std::vector<float> customDeformer::s_hostNormals;
+std::vector<int>   customDeformer::s_hostVertIdx;
+std::vector<float> customDeformer::s_hostRestCross;
+bool               customDeformer::s_topologyReady = false;
+
+
+
+MGPUDeformerRegistrationInfo* wrinkleGPUDeformer::getGPUDeformerInfo()
+{
+	static wrinkleDeformerNodeGPUDeformerInfo theOne;
+	return &theOne;
+}
+
+wrinkleGPUDeformer::wrinkleGPUDeformer() : MPxGPUStandardDeformer()
+{
+	fLocatorMatrix = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+}
+
+wrinkleGPUDeformer::~wrinkleGPUDeformer()
+{
+	terminate();
+}
+
+bool wrinkleGPUDeformer::validateNodeInGraph(MDataBlock& block, const MEvaluationNode& evaluationNode, const MPlug& plug, MStringArray* messages)
+{
+	return true;
+}
+bool wrinkleGPUDeformer::validateNodeValues(MDataBlock& block, const MEvaluationNode& evaluationNode, const MPlug& plug, MStringArray* messages)
+{
+	return true;
+}
+
+bool wrinkleGPUDeformer::extractLocatorMatrix(MDataBlock& block)
+{
+	MStatus status;
+	MDataHandle matData = block.inputValue(customDeformer::locatorMatrix, &status);
+	if (MS::kSuccess != status) return false;
+	MMatrix omat = matData.asMatrix();
+	float matrixData[4][4];
+	if (!omat.get(matrixData)) return false;
+	memcpy(fLocatorMatrix.s, matrixData, sizeof(matrixData));
+	return true;
+}
+
+// -----------------------------------------------------------------------------
+// enqueueStrainPass
+// Dispatches one thread per triangle. Scatters strain/amp/dir into per-vertex
+// accumulator buffers using atomic_add_float.
+// -----------------------------------------------------------------------------
+cl_int wrinkleGPUDeformer::enqueueStrainPass(
+	MAutoCLEvent& syncEvent,
+	const MGPUDeformerBuffer& inputPositions,
+	unsigned int              numTris,
+	float warpStiffness, float weftStiffness, float areaStiffness,
+	float frequency, float amplitude)
+{
+	cl_int err = CL_SUCCESS;
+	MAutoCLEvent syncInputEvent = syncEvent;
+	syncEvent = MAutoCLEvent();
+
+	MGPUEventList eventList;
+	eventList.add(syncInputEvent);
+
+	unsigned int p = 0;
+	// Inputs
+	err = fStrainKernelInfo.setKernelArgBuffer(p++, inputPositions.buffer(), err);
+	err = fStrainKernelInfo.setKernelArgBuffer(p++, fTriQInvBuffer, err);
+	err = fStrainKernelInfo.setKernelArgBuffer(p++, fTriNormalsBuffer, err);
+	err = fStrainKernelInfo.setKernelArgBuffer(p++, fTriVertIdxBuffer, err);
+	err = fStrainKernelInfo.setKernelArgBuffer(p++, fTriRestCrossBuffer, err);
+	// Outputs (accumulator buffers, zeroed before this call each frame)
+	err = fStrainKernelInfo.setKernelArgBuffer(p++, fVertStrainAccumBuffer, err);
+	err = fStrainKernelInfo.setKernelArgBuffer(p++, fVertDirAccumBuffer, err);
+	err = fStrainKernelInfo.setKernelArgBuffer(p++, fVertAreaDeltaBuffer, err);
+	// Scalar params (must match kernel signature order exactly)
+	err = fStrainKernelInfo.setKernelArg<cl_float>(p++, warpStiffness, err);
+	err = fStrainKernelInfo.setKernelArg<cl_float>(p++, weftStiffness, err);
+	err = fStrainKernelInfo.setKernelArg<cl_float>(p++, areaStiffness, err);
+	err = fStrainKernelInfo.setKernelArg<cl_float>(p++, frequency, err);
+	err = fStrainKernelInfo.setKernelArg<cl_float>(p++, amplitude, err);
+	err = fStrainKernelInfo.setKernelArg<cl_uint>(p++, numTris, err);
+
+	return CL_SUCCESS == err ? fStrainKernelInfo.enqueueKernel(eventList, syncEvent) : err;
+}
+
+// -----------------------------------------------------------------------------
+// enqueueDisplacePass
+// Dispatches one thread per vertex. Reads CPU-uploaded BFS phase/mask/amp
+// and writes final displaced positions.
+// -----------------------------------------------------------------------------
+cl_int wrinkleGPUDeformer::enqueueDisplacePass(
+	MAutoCLEvent& syncEvent,
+	const MGPUDeformerBuffer& inputPositions,
+	MGPUDeformerBuffer& outputPositions,
+	float envelope, float threshold)
+{
+	cl_int err = CL_SUCCESS;
+	MAutoCLEvent syncInputEvent = syncEvent;
+	syncEvent = MAutoCLEvent();
+
+	MGPUEventList eventList;
+	eventList.add(syncInputEvent);
+
+	unsigned int numVerts = affectCount();
+
+	unsigned int p = 0;
+	err = fKernelInfo.setKernelArgBuffer(p++, outputPositions.buffer(), err);
+	err = fKernelInfo.setKernelArgBuffer(p++, inputPositions.buffer(), err);
+	err = fKernelInfo.setKernelArgBuffer(p++, fVertexNormalsBuffer, err);
+	err = fKernelInfo.setKernelArgBuffer(p++, fWrinklePhaseBuffer, err);
+	err = fKernelInfo.setKernelArgBuffer(p++, fStrainMaskBuffer, err);
+	err = fKernelInfo.setKernelArgBuffer(p++, fVertexAmpsBuffer, err);
+	err = fKernelInfo.setKernelArg<cl_float>(p++, envelope, err);
+	err = fKernelInfo.setKernelArg<cl_float>(p++, threshold, err);
+	err = fKernelInfo.setKernelArg<cl_uint>(p++, numVerts, err);
+
+	return CL_SUCCESS == err ? fKernelInfo.enqueueKernel(eventList, syncEvent) : err;
+}
+
+// -----------------------------------------------------------------------------
+// evaluate
+// -----------------------------------------------------------------------------
+MPxGPUDeformer::DeformerStatus wrinkleGPUDeformer::evaluate(
+	MDataBlock& block,
+	const MEvaluationNode& evaluationNode,
+	const MPlug& plug,
+	const MPlugArray& inputPlugs,
+	const MGPUDeformerData& inputData,
+	MGPUDeformerData& outputData)
+{
+	// ------------------------------------------------------------------
+	// 1. Extract node parameters
+	// ------------------------------------------------------------------
+	float threshold = block.inputValue(customDeformer::compressionThreshold).asFloat();
+	float amplitude = block.inputValue(customDeformer::wrinkleAmpVal).asFloat();
+	float frequency = block.inputValue(customDeformer::wrinkleFreqVal).asFloat();
+	float warpStiff = block.inputValue(customDeformer::warpStiffness).asFloat();
+	float weftStiff = block.inputValue(customDeformer::weftStiffness).asFloat();
+	float areaStiff = block.inputValue(customDeformer::areaStiffness).asFloat();
+
+	// envelope lives on the base deformer's weight attribute
+	float envelope = block.inputValue(MPxDeformerNode::envelope).asFloat();
+
+	// ------------------------------------------------------------------
+	// 2. Maya-managed position buffers (the only MGPUDeformerBuffer we need)
+	// ------------------------------------------------------------------
+	const MGPUDeformerBuffer inputPositions = inputData.getBuffer(MPxGPUDeformer::sPositionsName(), plug);
+	MGPUDeformerBuffer       outputPositions = outputData.getBuffer(MPxGPUDeformer::sPositionsName(), plug);
+
+	// ------------------------------------------------------------------
+	// 3. Standard evaluation setup
+	// ------------------------------------------------------------------
+	MAutoCLEvent syncEvent;
+	MPxGPUDeformer::DeformerStatus ds =
+		prepareEvaluation(block, evaluationNode, plug, inputPlugs, inputData, outputData, syncEvent);
+	if (ds != MPxGPUDeformer::kDeformerSuccess) return ds;
+
+	prepareAffectMapBuffer();
+	prepareWeightsBuffer(evaluationNode);
+
+	if (!extractLocatorMatrix(block))
+		return MPxGPUDeformer::kDeformerFailure;
+
+	// ------------------------------------------------------------------
+	// 4. One-time topology upload (reads from customDeformer statics)
+	// ------------------------------------------------------------------
+	if (!fTopologyUploaded) {
+		// CPU deformer must have already run once to populate these.
+		if (!customDeformer::s_topologyReady) {
+			MGlobal::displayWarning("wrinkleGPUDeformer: topology not ready yet, deferring.");
+			return MPxGPUDeformer::kDeformerFailure;
+		}
+
+		cl_int err = CL_SUCCESS;
+		cl_context ctx = MOpenCLInfo::getOpenCLContext();
+
+		unsigned int numVerts = affectCount();
+		unsigned int numTris = (unsigned int)customDeformer::s_hostVertIdx.size() / 3;
+
+		auto uploadFloatBuf = [&](MAutoCLMem& buf, const std::vector<float>& data) {
+			cl_mem raw = clCreateBuffer(ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+				data.size() * sizeof(float), (void*)data.data(), &err);
+			buf.attach(raw);
+		};
+
+		auto uploadIntBuf = [&](MAutoCLMem& buf, const std::vector<int>& data) {
+			cl_mem raw = clCreateBuffer(ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+				data.size() * sizeof(int), (void*)data.data(), &err);
+			buf.attach(raw);
+		};
+
+		auto allocRWBuf = [&](MAutoCLMem& buf, size_t bytes) {
+			cl_mem raw = clCreateBuffer(ctx, CL_MEM_READ_WRITE, bytes, nullptr, &err);
+			buf.attach(raw);
+		};
+
+		uploadFloatBuf(fTriQInvBuffer, customDeformer::s_hostQInv);
+		uploadFloatBuf(fTriNormalsBuffer, customDeformer::s_hostNormals);
+		uploadIntBuf(fTriVertIdxBuffer, customDeformer::s_hostVertIdx);
+		uploadFloatBuf(fTriRestCrossBuffer, customDeformer::s_hostRestCross);
+
+		// Per-vertex accumulator buffers (zeroed each frame before strain kernel)
+		allocRWBuf(fVertStrainAccumBuffer, numVerts * 3 * sizeof(float));
+		allocRWBuf(fVertDirAccumBuffer, numVerts * 3 * sizeof(float));
+		allocRWBuf(fVertAreaDeltaBuffer, numVerts * 3 * sizeof(float));
+
+		// Buffers uploaded each frame from CPU BFS results
+		allocRWBuf(fVertexNormalsBuffer, numVerts * 3 * sizeof(float));
+		allocRWBuf(fWrinklePhaseBuffer, numVerts * sizeof(float));
+		allocRWBuf(fStrainMaskBuffer, numVerts * sizeof(float));
+		allocRWBuf(fVertexAmpsBuffer, numVerts * sizeof(float));
+
+		if (err != CL_SUCCESS) {
+			MGlobal::displayError("wrinkleGPUDeformer: buffer allocation failed.");
+			return MPxGPUDeformer::kDeformerFailure;
+		}
+
+		fTopologyUploaded = true;
+	}
+
+	// ------------------------------------------------------------------
+	// 5. Load kernels (once each)
+	// ------------------------------------------------------------------
+	if (!fStrainKernelInfo.kernel()) {
+		MString strainFile = customDeformer::pluginPath + "/strainKernel.cl";
+		unsigned int numTris = (unsigned int)customDeformer::s_hostVertIdx.size() / 3;
+		fStrainKernelInfo.loadOrUpdate(strainFile, "wrinkleStrain", numTris);
+		if (!fStrainKernelInfo.kernel()) {
+			MGlobal::displayError("wrinkleGPUDeformer: failed to compile strainKernel.cl");
+			return MPxGPUDeformer::kDeformerFailure;
+		}
+	}
+	if (!fKernelInfo.kernel()) {
+		MString displaceFile = customDeformer::pluginPath + "/kernel.cl";
+		fKernelInfo.loadOrUpdate(displaceFile, "wrinkleDeform", affectCount());
+		if (!fKernelInfo.kernel()) {
+			MGlobal::displayError("wrinkleGPUDeformer: failed to compile kernel.cl");
+			return MPxGPUDeformer::kDeformerFailure;
+		}
+	}
+
+	// ------------------------------------------------------------------
+	// 6. Upload per-frame CPU BFS results
+	//    (wrinklePhase, strainMask, vertexAmps, vertexNormals)
+	//    The CPU deformer must have already run BFS for this frame.
+	//    TODO: replace this with GPU BFS once the rest is stable.
+	// ------------------------------------------------------------------
+	{
+		cl_command_queue queue = MOpenCLInfo::getMayaDefaultOpenCLCommandQueue();
+		unsigned int numVerts = affectCount();
+
+		auto uploadPerFrame = [&](MAutoCLMem& buf, const void* data, size_t bytes) -> bool {
+			cl_int e = clEnqueueWriteBuffer(queue, buf.get(), CL_FALSE,
+				0, bytes, data, 0, nullptr, nullptr);
+			return e == CL_SUCCESS;
+			};
+
+		if (!uploadPerFrame(fWrinklePhaseBuffer, customDeformer::s_phase.data(), numVerts * sizeof(float)) ||
+			!uploadPerFrame(fStrainMaskBuffer, customDeformer::s_strainMask.data(), numVerts * sizeof(float)) ||
+			!uploadPerFrame(fVertexAmpsBuffer, customDeformer::s_vertexAmps.data(), numVerts * sizeof(float)) ||
+			!uploadPerFrame(fVertexNormalsBuffer, customDeformer::s_normals.data(), numVerts * 3 * sizeof(float)))
+		{
+			MGlobal::displayError("wrinkleGPUDeformer: per-frame upload failed.");
+			return MPxGPUDeformer::kDeformerFailure;
+		}
+		clFinish(queue);
+	}
+
+	// ------------------------------------------------------------------
+	// 7. Zero the accumulator buffers (they scatter-add each frame)
+	// ------------------------------------------------------------------
+	{
+		cl_command_queue queue = MOpenCLInfo::getMayaDefaultOpenCLCommandQueue();
+		unsigned int numVerts = affectCount();
+		float zero = 0.0f;
+		clEnqueueFillBuffer(queue, fVertStrainAccumBuffer.get(), &zero, sizeof(float), 0, numVerts * 3 * sizeof(float), 0, nullptr, nullptr);
+		clEnqueueFillBuffer(queue, fVertDirAccumBuffer.get(), &zero, sizeof(float), 0, numVerts * 3 * sizeof(float), 0, nullptr, nullptr);
+		clEnqueueFillBuffer(queue, fVertAreaDeltaBuffer.get(), &zero, sizeof(float), 0, numVerts * 3 * sizeof(float), 0, nullptr, nullptr);
+		clFinish(queue);
+	}
+
+	cl_int err;
+
+	// ------------------------------------------------------------------
+	// 8. Initialize output buffer, then run both passes
+	// ------------------------------------------------------------------
+	err = initializeOutputPositions(syncEvent);
+	if (err != CL_SUCCESS) return MPxGPUDeformer::kDeformerFailure;
+
+	unsigned int numTris = (unsigned int)customDeformer::s_hostVertIdx.size() / 3;
+	err = enqueueStrainPass(syncEvent, inputPositions, numTris,
+		warpStiff, weftStiff, areaStiff,
+		frequency, amplitude);
+	if (err != CL_SUCCESS) return MPxGPUDeformer::kDeformerFailure;
+
+	err = enqueueDisplacePass(syncEvent, inputPositions, outputPositions,
+		envelope, threshold);
+	if (err != CL_SUCCESS) return MPxGPUDeformer::kDeformerFailure;
+
+	return finishEvaluation(syncEvent, outputData);
+}
+
+void wrinkleGPUDeformer::terminate()
+{
+	fKernelInfo.reset();
+	fStrainKernelInfo.reset();
+	// MAutoCLMem destructors release their cl_mem handles automatically
+	MPxGPUStandardDeformer::terminate();
+}
+
+wrinkleDeformerNodeGPUDeformerInfo::wrinkleDeformerNodeGPUDeformerInfo()
+	: MGPUDeformerRegistrationInfo() {
 }
