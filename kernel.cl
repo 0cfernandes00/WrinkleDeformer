@@ -1,8 +1,8 @@
 __kernel void wrinkleDeform(
     __global float* finalPositions,
     __global const float* initialPositions,
-    __global const float* vertexNormals,  // needs to be added
-    __global const float* wrinklePhase,   // uploaded from CPU BFS result
+    __global const float* vertexNormals,  
+    __global const float* wrinklePhase,   
     __global const float* strainMask,
     __global const float* vertexAmps,
     const float envelope,
