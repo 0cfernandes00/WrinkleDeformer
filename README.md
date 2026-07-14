@@ -10,6 +10,13 @@ This is a personal project which began in Spring 2026. The intended outcome is t
 
 Much of the implementation is built on the following SIGGRAPH paper [Strain Based Dynamics Paper](https://dl.acm.org/doi/10.5555/2849517.2849542)
 
+## User Guide
+
+1) Load the plugin into your Maya session titled helloMaya.mll
+2) Select your mesh, and run the following MEL command
+      deformer -type "customDeformer";
+3) Select the mesh, and select the deformer in the attribute editor to edit the parameters
+
 ## Geodesic Phase Integration and Arc-length conservation
 
 <img src="visuals/before.png" width="390"> <img src="visuals/after.png" width="420"> 
