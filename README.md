@@ -15,7 +15,14 @@ Much of the implementation is built on the following SIGGRAPH paper [Strain Base
 1) Load the plugin into your Maya session titled helloMaya.mll
 2) Select your mesh, and run the following MEL command
       deformer -type "customDeformer";
-3) Select the mesh, and select the deformer in the attribute editor to edit the parameters
+3) Select the mesh in the rest/t-pose, and select the deformer in the attribute editor to edit the parameters
+
+Notes:
+
+** VERY IMPORTANT **
+Users should complete the following actions on the rest frame (the frame the deformer was added). Failure to do so will cause weird bugs.
+- Saving the maya scene
+- Painting the deformer envelope
 
 ## Geodesic Phase Integration and Arc-length conservation
 
