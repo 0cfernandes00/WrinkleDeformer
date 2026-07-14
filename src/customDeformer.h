@@ -25,11 +25,11 @@ public:
 
 	static MObject locatorMatrix;
 	static MTypeId id;
-	static MObject iterations;
-	static MObject smoothAlpha;
+	//static MObject iterations;
+	//static MObject smoothAlpha;
 	static MObject wrinkleFreqVal;
 	static MObject wrinkleAmpVal;
-	static MObject compressionThreshold;
+	//static MObject compressionThreshold;
 	static MObject warpStiffness;
 	static MObject weftStiffness;
 	static MObject areaStiffness;

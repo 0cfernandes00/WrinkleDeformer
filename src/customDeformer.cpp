@@ -13,11 +13,11 @@
 
 MTypeId customDeformer::id(0x8000f);
 MObject customDeformer::locatorMatrix;
-MObject customDeformer::iterations;
-MObject customDeformer::smoothAlpha;
+//MObject customDeformer::iterations;
+//MObject customDeformer::smoothAlpha;
 MObject customDeformer::wrinkleFreqVal;
 MObject customDeformer::wrinkleAmpVal;
-MObject customDeformer::compressionThreshold;
+//MObject customDeformer::compressionThreshold;
 MObject customDeformer::warpStiffness;
 MObject customDeformer::weftStiffness;
 MObject customDeformer::areaStiffness;
@@ -52,6 +52,7 @@ MStatus customDeformer::initialize()
 	mAttr.setConnectable(true);
 	addAttribute(locatorMatrix);
 
+	/*
 	iterations = nAttr.create("iterations", "iterations", MFnNumericData::kInt, 10);
 	nAttr.setStorable(true);
 	nAttr.setConnectable(true);
@@ -63,7 +64,7 @@ MStatus customDeformer::initialize()
 	nAttr.setConnectable(true);
 	nAttr.setKeyable(true);
 	addAttribute(smoothAlpha);
-
+	*/
 	wrinkleFreqVal = nAttr.create("wrinkleFreq", "wrinkleFreq", MFnNumericData::kFloat, 5.0f);
 	nAttr.setStorable(true);
 	nAttr.setConnectable(true);
@@ -76,11 +77,13 @@ MStatus customDeformer::initialize()
 	nAttr.setKeyable(true);
 	addAttribute(wrinkleAmpVal);
 
+	/*
 	compressionThreshold = nAttr.create("compressionThreshold", "compressionThreshold", MFnNumericData::kFloat, -0.1f);
 	nAttr.setStorable(true);
 	nAttr.setConnectable(true);
 	nAttr.setKeyable(true);
 	addAttribute(compressionThreshold);
+	*/
 
 	warpStiffness = nAttr.create("warpStiffness", "warpStiffness", MFnNumericData::kFloat, 1.0f);
 	nAttr.setStorable(true);
@@ -102,11 +105,11 @@ MStatus customDeformer::initialize()
 	tAttr.setConnectable(true);
 	addAttribute(restMesh);
 	
-	attributeAffects(customDeformer::iterations, customDeformer::outputGeom);
-	attributeAffects(customDeformer::smoothAlpha, customDeformer::outputGeom);
+	//attributeAffects(customDeformer::iterations, customDeformer::outputGeom);
+	//attributeAffects(customDeformer::smoothAlpha, customDeformer::outputGeom);
 	attributeAffects(customDeformer::wrinkleFreqVal, customDeformer::outputGeom);
 	attributeAffects(customDeformer::wrinkleAmpVal, customDeformer::outputGeom);
-	attributeAffects(customDeformer::compressionThreshold, customDeformer::outputGeom);
+	//attributeAffects(customDeformer::compressionThreshold, customDeformer::outputGeom);
 	attributeAffects(customDeformer::warpStiffness, customDeformer::outputGeom);
 	attributeAffects(customDeformer::weftStiffness, customDeformer::outputGeom);
 	attributeAffects(customDeformer::areaStiffness, customDeformer::outputGeom);
@@ -124,11 +127,11 @@ MStatus customDeformer::deform(MDataBlock& block, MItGeometry& iter, const MMatr
 	float envelope = block.inputValue(customDeformer::envelope, &returnStatus).asFloat();
 	if (envelope < 0.001f) return MStatus::kSuccess;
 
-	int iterations = block.inputValue(customDeformer::iterations, &returnStatus).asInt();
-	float smoothAlpha = block.inputValue(customDeformer::smoothAlpha, &returnStatus).asFloat();
+	//int iterations = block.inputValue(customDeformer::iterations, &returnStatus).asInt();
+	//float smoothAlpha = block.inputValue(customDeformer::smoothAlpha, &returnStatus).asFloat();
 	float wrinkleFreqVal = block.inputValue(customDeformer::wrinkleFreqVal, &returnStatus).asFloat();
 	float wrinkleAmpVal = block.inputValue(customDeformer::wrinkleAmpVal, &returnStatus).asFloat();
-	float compressionThreshold = block.inputValue(customDeformer::compressionThreshold, &returnStatus).asFloat();
+	//float compressionThreshold = block.inputValue(customDeformer::compressionThreshold, &returnStatus).asFloat();
 	float warpStiffness = block.inputValue(customDeformer::warpStiffness, &returnStatus).asFloat();
 	float weftStiffness = block.inputValue(customDeformer::weftStiffness, &returnStatus).asFloat();
 	float areaStiffness = block.inputValue(customDeformer::areaStiffness, &returnStatus).asFloat();
@@ -157,7 +160,6 @@ MStatus customDeformer::deform(MDataBlock& block, MItGeometry& iter, const MMatr
 			mInitialized = true;
 		}
 		else {
-			// Fallback (Will still break on reload if deformed, prevents crashing)
 			MGlobal::displayWarning("customDeformer: No restMesh connected! Using current input mesh as rest state.");
 			mesh.buildFromMesh(currentInputMesh, numVerts);
 			mInitialized = true;
@@ -802,7 +804,7 @@ MPxGPUDeformer::DeformerStatus wrinkleGPUDeformer::evaluate(
 	// ------------------------------------------------------------------
 	// 1. Extract node parameters
 	// ------------------------------------------------------------------
-	float threshold = block.inputValue(customDeformer::compressionThreshold).asFloat();
+	//float threshold = block.inputValue(customDeformer::compressionThreshold).asFloat();
 	float amplitude = block.inputValue(customDeformer::wrinkleAmpVal).asFloat();
 	float frequency = block.inputValue(customDeformer::wrinkleFreqVal).asFloat();
 	float warpStiff = block.inputValue(customDeformer::warpStiffness).asFloat();
@@ -964,8 +966,8 @@ MPxGPUDeformer::DeformerStatus wrinkleGPUDeformer::evaluate(
 		frequency, amplitude);
 	if (err != CL_SUCCESS) return MPxGPUDeformer::kDeformerFailure;
 
-	err = enqueueDisplacePass(syncEvent, inputPositions, outputPositions,
-		envelope, threshold);
+	//err = enqueueDisplacePass(syncEvent, inputPositions, outputPositions,
+		//envelope, threshold);
 	if (err != CL_SUCCESS) return MPxGPUDeformer::kDeformerFailure;
 
 	return finishEvaluation(syncEvent, outputData);
