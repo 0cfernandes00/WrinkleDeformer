@@ -21,6 +21,7 @@ Notes:
 
 ** VERY IMPORTANT **
 Users should complete the following actions on the rest frame (the frame the deformer was added). Failure to do so will cause weird bugs.
+- Editing deformer attribute values
 - Saving the maya scene
 - Painting the deformer envelope
 
