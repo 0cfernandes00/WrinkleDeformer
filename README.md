@@ -10,6 +10,8 @@ This is a personal project which began in Spring 2026. The intended outcome is t
 
 Much of the implementation is built on the following SIGGRAPH paper [Strain Based Dynamics Paper](https://dl.acm.org/doi/10.5555/2849517.2849542)
 
+<img src="visuals/wrinkleDemo.gif" width="500"> 
+
 ## User Guide
 
 1) Load the plugin into your Maya session titled helloMaya.mll
