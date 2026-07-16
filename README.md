@@ -12,6 +12,8 @@ Much of the implementation is built on the following SIGGRAPH paper [Strain Base
 
 <img src="visuals/wrinkleDemo.gif" width="500"> 
 
+<img src="visuals/horseWrinkle.gif" width="500"> 
+
 ## User Guide
 
 1) Load the plugin into your Maya session titled helloMaya.mll
